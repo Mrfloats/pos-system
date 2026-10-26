@@ -1,0 +1,27 @@
+{
+  "name": "pos-system",
+  "private": true,
+  "workspaces": [
+    "apps/api",
+    "apps/backoffice"
+  ],
+  "scripts": {
+    "db:up": "docker compose up -d",
+    "db:down": "docker compose down",
+    "db:migrate": "npm run db:migrate -w apps/api",
+    "db:seed": "npm run db:seed -w apps/api",
+    "dev:api": "npm run start:dev -w apps/api",
+    "dev:web": "npm run dev -w apps/backoffice",
+    "test:api": "npm run test:e2e -w apps/api",
+    "build": "npm run build -w apps/api && npm run build -w apps/backoffice",
+    "platform:admin": "npm run platform:admin -w apps/api --"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "allowScripts": {
+    "esbuild": true,
+    "@scarf/scarf": false,
+    "unrs-resolver@1.12.2": true
+  }
+}

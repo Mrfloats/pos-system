@@ -1,0 +1,26 @@
+# Run Floatly on this computer and reach it from the internet through a
+# Cloudflare Tunnel (free). Used together with docker-compose.prod.yml:
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.tunnel.yml --env-file .env.production up -d --build
+#
+# Cloudflare provides HTTPS and connects to this computer from the outside, so
+# no router ports need opening. See "Option B" in DEPLOY.md.
+
+services:
+  caddy:
+    environment:
+      # Cloudflare handles HTTPS; inside, Caddy just serves plain HTTP to the tunnel.
+      SITE_ADDRESS: ":80"
+    # Not published to the network: only the tunnel (and this computer, on 8080) can reach it.
+    ports: !override
+      - "127.0.0.1:${LOCAL_PORT:-8080}:80"
+
+  cloudflared:
+    image: cloudflare/cloudflared:2025.8.1
+    restart: unless-stopped
+    depends_on:
+      - caddy
+    # The token comes from the Cloudflare dashboard (Networks → Tunnels → your tunnel).
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?set TUNNEL_TOKEN from the Cloudflare dashboard}

@@ -1,0 +1,43 @@
+# Behind a Cloudflare Tunnel the visitor's address arrives from a private
+# address (the tunnel container); trust those so it is passed on to the API.
+{
+	servers {
+		trusted_proxies static private_ranges
+	}
+}
+
+# Floatly's front door. Caddy gets and renews the HTTPS certificate for your
+# domain by itself, then sends /api/* to the API and everything else to the website.
+{$SITE_ADDRESS}
+
+encode zstd gzip
+
+@api path /api/*
+handle @api {
+	# Every running API copy (docker compose scales "api"), found by name and shared out evenly.
+	reverse_proxy {
+		dynamic a api 4000 {
+			refresh 10s
+		}
+		lb_policy least_conn
+		lb_retries 2
+		health_uri /api/v1/health
+		health_interval 10s
+	}
+}
+
+handle {
+	reverse_proxy web:3000
+}
+
+header {
+	Strict-Transport-Security "max-age=31536000; includeSubDomains"
+	X-Content-Type-Options nosniff
+	Referrer-Policy strict-origin-when-cross-origin
+	-Server
+}
+
+log {
+	output stdout
+	format console
+}

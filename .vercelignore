@@ -1,0 +1,13 @@
+# Not uploaded to Vercel: local secrets, build output, and parts Vercel doesn't run.
+**/node_modules
+**/.next
+**/dist
+**/.env
+**/.env.*
+!**/.env.example
+**/*.log
+**/*.tsbuildinfo
+**/coverage
+apps/till
+docker
+.vercel

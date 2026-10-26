@@ -1,0 +1,158 @@
+@import "tailwindcss";
+
+/*
+ * Backoffice design tokens.
+ * Ledger green for structure, cool paper for the workspace, receipt amber only
+ * for things that need attention (low stock, warnings). All figures use
+ * tabular numerals so money and quantities line up like a till roll.
+ */
+@theme {
+  --font-sans: "Instrument Sans Variable", ui-sans-serif, system-ui, sans-serif;
+
+  --color-ledger-950: #0a2c22;
+  --color-ledger-900: #0e3b2e;
+  --color-ledger-800: #155040;
+  --color-ledger-700: #1c6652;
+  --color-ledger-600: #237d64;
+  --color-ledger-100: #dcefe7;
+  --color-ledger-50: #eef7f2;
+
+  --color-paper: #f5f7f4;
+  --color-surface: #ffffff;
+  --color-ink: #18222b;
+  --color-ink-soft: #4a5762;
+  --color-ink-faint: #7b8790;
+  --color-line: #dce3dc;
+  --color-line-strong: #c4cdc5;
+
+  --color-amber: #e8a317;
+  --color-amber-soft: #fdf3dc;
+  --color-amber-ink: #7a4f00;
+  --color-danger: #b42318;
+  --color-danger-soft: #fdecea;
+
+  /* Soft, layered shadows: cards float on the page instead of being boxed in by borders. */
+  --shadow-card: 0 1px 2px rgb(24 34 43 / 0.04), 0 4px 16px rgb(24 34 43 / 0.06);
+  --shadow-lift: 0 2px 4px rgb(24 34 43 / 0.05), 0 14px 32px rgb(24 34 43 / 0.1);
+}
+
+/* The surface everything sits on: white, rounded, softly shadowed (matches the home tiles). */
+@utility card {
+  border-radius: 1rem;
+  border: 1px solid rgb(24 34 43 / 0.05);
+  background-color: var(--color-surface);
+  box-shadow: var(--shadow-card);
+}
+
+html {
+  font-feature-settings: "tnum" 1, "cv11" 1;
+}
+
+body {
+  /* A faint green glow at the top keeps the page from feeling flat. */
+  background:
+    radial-gradient(1100px 420px at 75% -120px, rgb(35 125 100 / 0.09), transparent 70%),
+    var(--color-paper);
+  background-attachment: fixed;
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+}
+
+/* Visible keyboard focus everywhere */
+:where(a, button, input, select, textarea, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--color-ledger-600);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}
+
+dialog::backdrop {
+  background: rgb(10 44 34 / 0.45);
+}
+
+/* ----- Motion (sign-in screen and anywhere else that wants it) ----------------
+ * All of these are switched off by the prefers-reduced-motion rule above. */
+@theme {
+  --animate-fade-up: fade-up 0.6s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-fade-in: fade-in 0.8s ease-out both;
+  --animate-float: float 6s ease-in-out infinite;
+  --animate-float-slow: float 8s ease-in-out infinite;
+  --animate-drift: drift 18s ease-in-out infinite;
+  --animate-drift-reverse: drift 22s ease-in-out infinite reverse;
+  --animate-print: print 0.45s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-shimmer: shimmer 2.8s ease-in-out infinite;
+  --animate-shake: shake 0.45s cubic-bezier(0.36, 0.07, 0.19, 0.97) both;
+  --animate-pop: pop 0.5s cubic-bezier(0.34, 1.56, 0.64, 1) both;
+  --animate-grow: grow 0.9s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-word: word 0.5s cubic-bezier(0.22, 1, 0.36, 1) both;
+  --animate-dance: dance 0.9s ease-in-out infinite;
+  --animate-hop: hop 0.6s ease-in-out infinite;
+
+  @keyframes fade-up {
+    from { opacity: 0; transform: translateY(14px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+  @keyframes fade-in {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  @keyframes float {
+    0%, 100% { transform: translateY(0) rotate(var(--tilt, 0deg)); }
+    50% { transform: translateY(-10px) rotate(var(--tilt, 0deg)); }
+  }
+  @keyframes drift {
+    0%, 100% { transform: translate(0, 0) scale(1); }
+    33% { transform: translate(40px, -30px) scale(1.1); }
+    66% { transform: translate(-30px, 25px) scale(0.95); }
+  }
+  @keyframes print {
+    from { opacity: 0; transform: translateY(-6px); clip-path: inset(0 0 100% 0); }
+    to { opacity: 1; transform: translateY(0); clip-path: inset(0 0 0 0); }
+  }
+  @keyframes shimmer {
+    0% { transform: translateX(-120%) skewX(-20deg); }
+    60%, 100% { transform: translateX(220%) skewX(-20deg); }
+  }
+  @keyframes shake {
+    10%, 90% { transform: translateX(-2px); }
+    20%, 80% { transform: translateX(4px); }
+    30%, 50%, 70% { transform: translateX(-7px); }
+    40%, 60% { transform: translateX(7px); }
+  }
+  @keyframes pop {
+    from { opacity: 0; transform: scale(0.6); }
+    to { opacity: 1; transform: scale(1); }
+  }
+  @keyframes grow {
+    from { transform: scaleY(0); }
+    to { transform: scaleY(1); }
+  }
+  /* A little shimmy: tilt left and right with small hops (input boxes on hover). */
+  @keyframes dance {
+    0%, 100% { transform: translateY(0) rotate(0deg) scale(1); }
+    15% { transform: translateY(-3px) rotate(-1.2deg) scale(1.01); }
+    30% { transform: translateY(0) rotate(1.2deg) scale(1.015); }
+    45% { transform: translateY(-2px) rotate(-0.8deg) scale(1.01); }
+    60% { transform: translateY(0) rotate(0.8deg) scale(1.01); }
+    75% { transform: translateY(-1px) rotate(-0.4deg) scale(1.005); }
+  }
+  /* The icon inside the box bobs along; it keeps its vertical centring (-50%). */
+  @keyframes hop {
+    0%, 100% { transform: translateY(-50%) rotate(0deg) scale(1); }
+    30% { transform: translateY(calc(-50% - 4px)) rotate(-14deg) scale(1.15); }
+    60% { transform: translateY(-50%) rotate(10deg) scale(1.05); }
+  }
+  @keyframes word {
+    from { opacity: 0; transform: translateY(60%); filter: blur(4px); }
+    to { opacity: 1; transform: translateY(0); filter: blur(0); }
+  }
+}
