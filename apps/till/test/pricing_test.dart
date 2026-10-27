@@ -12,7 +12,35 @@ void main() {
   final usd = c.baseCurrency;
   final zig = c.currency('ZWG');
 
-  CartLine line(Sellable s, int quantity) => CartLine(product: s.product, variant: s.variant, quantity: quantity);
+  CartLine line(Sellable s, int quantity, {List<Choice> choices = const []}) =>
+      CartLine(product: s.product, variant: s.variant, quantity: quantity, pack: s.pack, choices: choices);
+
+  test('a case barcode sells the case at its own price', () {
+    final hit = c.lookup('CASE500')!;
+    expect(hit.pack!.name, 'Case of 24');
+    expect(hit.pack!.units, 24000);
+    final cart = priceCart(lines: [line(hit, 2000)], currency: usd, taxRates: c.taxRates);
+    expect(cart.total, 2000);
+    expect(cart.lines.single.line.name, 'Water 500ml · Case of 24');
+    expect(cart.lines.single.line.partQuantities, isFalse);
+  });
+
+  test("adds the choices' prices to each item: a burger with salad and cheese is 8.00", () {
+    final burger = c.products.firstWhere((p) => p.name == 'Burger');
+    final options = {
+      for (final g in burger.choiceGroups)
+        for (final o in g.options) o.name: o,
+    };
+    final cart = priceCart(
+      lines: [
+        line((product: burger, variant: burger.variants.single, pack: null), 2000, choices: [options['Salad']!, options['Cheese']!]),
+      ],
+      currency: usd,
+      taxRates: c.taxRates,
+    );
+    expect(cart.lines.single.unitPrice, 800);
+    expect(cart.total, 1600);
+  });
 
   test('finds products by barcode and SKU, and searches inside a parent category', () {
     expect(c.lookup('600100')!.product.name, 'Coke 500ml');

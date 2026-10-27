@@ -114,7 +114,23 @@ void main() {
       expect(closed['salesCount'], greaterThanOrEqualTo(1));
       expect(state.shift, isNull);
 
+      // A wholesale case: Floatly records it as a case and charges what the till worked out.
+      final cased = catalog.products.firstWhere((p) => p.variants.any((v) => v.packs.isNotEmpty));
+      final variant = cased.variants.firstWhere((v) => v.packs.isNotEmpty);
+      state.addItem(cased, variant, pack: variant.packs.first);
+      final caseCart = state.priced;
+      final caseReceipt = await state.completeSale([Payment(method: PayMethod.card, currency: caseCart.currency, amount: caseCart.total)]);
+      expect(caseReceipt.number, startsWith('S-'));
+      final caseSale = await owner.get('/sales/${caseReceipt.saleId}') as Map;
+      expect(toCents(caseSale['total']), caseCart.total);
+      expect((caseSale['lines'] as List).first, containsPair('packName', variant.packs.first.name));
+
+      // Switched off in the backoffice while signed in: the till stops at its next call to Floatly.
       await owner.patch('/devices/${device['id']}', {'active': false});
+      await expectLater(state.refreshCatalog(), throwsA(isA<ApiException>()));
+      expect(state.session, isNull);
+      expect(state.revoked, contains('switched off'));
+      expect(await state.signIn('1234'), contains('switched off'));
       state.dispose();
     },
     skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,

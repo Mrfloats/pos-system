@@ -57,6 +57,64 @@ Map<String, dynamic> catalogJson() => {
         {'id': 'v-tee-l', 'name': 'Large', 'sku': 'TEE-L', 'barcode': '700002', 'price': '12.00', 'isDefault': false},
       ],
     },
+    {
+      'id': 'p-water',
+      'name': 'Water 500ml',
+      'categoryId': null,
+      'taxRateId': 'vat',
+      'kind': 'standard',
+      'soldByWeight': false,
+      'unit': null,
+      'allowsDecimal': false,
+      'variants': [
+        {
+          'id': 'v-water',
+          'name': 'Default',
+          'sku': 'WATER',
+          'barcode': '600500',
+          'price': '0.50',
+          'isDefault': true,
+          'packagings': [
+            {'id': 'k-water-24', 'name': 'Case of 24', 'quantity': '24.000', 'barcode': 'CASE500', 'price': '10.00'},
+          ],
+        },
+      ],
+    },
+    {
+      'id': 'p-burger',
+      'name': 'Burger',
+      'categoryId': null,
+      'taxRateId': 'vat',
+      'kind': 'menu_item',
+      'soldByWeight': false,
+      'unit': null,
+      'allowsDecimal': false,
+      'variants': [
+        {'id': 'v-burger', 'name': 'Default', 'sku': 'BURGER', 'barcode': null, 'price': '6.50', 'isDefault': true},
+      ],
+      'modifierGroups': [
+        {
+          'id': 'g-side',
+          'name': 'Side',
+          'minSelect': 1,
+          'maxSelect': 1,
+          'modifiers': [
+            {'id': 'm-chips', 'name': 'Chips', 'priceDelta': '0.00'},
+            {'id': 'm-salad', 'name': 'Salad', 'priceDelta': '0.50'},
+          ],
+        },
+        {
+          'id': 'g-extras',
+          'name': 'Extras',
+          'minSelect': 0,
+          'maxSelect': 2,
+          'modifiers': [
+            {'id': 'm-cheese', 'name': 'Cheese', 'priceDelta': '1.00'},
+            {'id': 'm-onion', 'name': 'No onion', 'priceDelta': '0.00'},
+          ],
+        },
+      ],
+    },
   ],
   'customers': [
     {'id': 'c-tendai', 'name': 'Tendai', 'phone': '0772000000', 'tin': null, 'vatNumber': null, 'discountPercent': '10.00'},

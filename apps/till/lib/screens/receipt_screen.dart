@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../core/money.dart';
 import '../models/receipt.dart';
+import '../printing/print_receipt.dart';
 import '../printing/receipt_pdf.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
@@ -22,17 +23,25 @@ class _ReceiptScreenState extends State<ReceiptScreen> {
   @override
   void initState() {
     super.initState();
+    if (!widget.justSold) return;
     final settings = TillScope.read(context).settings;
-    if (widget.justSold && settings.autoPrint) {
-      WidgetsBinding.instance.addPostFrameCallback((_) => _print());
+    // After a cash sale the drawer opens (with the receipt, when receipts print by themselves).
+    final drawer = settings.direct && settings.openDrawer && paidInCash(widget.receipt);
+    if (settings.autoPrint) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _print(openDrawer: drawer));
+    } else if (drawer) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _run(() => openCashDrawer(settings), "Couldn't open the cash drawer"));
     }
   }
 
-  Future<void> _print() async {
+  Future<void> _print({bool openDrawer = false}) =>
+      _run(() => printSaleReceipt(TillScope.read(context).settings, widget.receipt, openDrawer: openDrawer), "Couldn't print");
+
+  Future<void> _run(Future<void> Function() task, String failed) async {
     try {
-      await printReceipt(widget.receipt, paperWidth: TillScope.read(context).settings.paperWidth);
+      await task();
     } catch (e) {
-      if (mounted) showMessage(context, "Couldn't print: $e", error: true);
+      if (mounted) showMessage(context, '$failed: $e', error: true);
     }
   }
 
@@ -240,6 +249,7 @@ class ReceiptView extends StatelessWidget {
                   children: [
                     row(l.name, m(l.total)),
                     Text('${formatQty(l.quantity)} × ${m(l.unitPrice)}${l.discount > 0 ? ' · less ${m(l.discount)}' : ''}', style: muted),
+                    if (l.choices.isNotEmpty) Text(l.choices.join(', '), style: muted),
                     if (l.note != null) Text(l.note!, style: muted.copyWith(fontStyle: FontStyle.italic)),
                   ],
                 ),

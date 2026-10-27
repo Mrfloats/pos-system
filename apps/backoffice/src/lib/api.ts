@@ -534,6 +534,11 @@ export interface SaleLine {
   id: string;
   variantId: string;
   productName: string;
+  /** Sold as a pack (a case of 24…): quantity counts packs. */
+  packName: string | null;
+  unitsPerPack: string;
+  /** Restaurant choices, as sold. */
+  modifiers: { id: string; name: string; groupName: string; priceDelta: string }[] | null;
   variantName: string;
   quantity: string;
   unitPrice: string;

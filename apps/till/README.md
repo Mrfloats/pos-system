@@ -15,9 +15,9 @@ It works with the same API as the backoffice, so every sale shows up in the back
 
 - **Setting up a till.** An owner or admin opens the app once, signs in, picks the store and names the till (T01, T02…). The device gets its own secret. Their sign-in isn't kept.
 - **PIN sign-in.** Staff sign in with the 4–6 digit till PIN set for them in the backoffice under **Staff**. Only owners, admins, managers, cashiers and waiters can sell. Staff limited to certain stores can only sign in on those stores' tills. **Lock** hands the till to the next person.
-- **Selling.** Product grid with categories, search, and barcode scanning. USB, Bluetooth and built-in scanners type into the search box. Phones and tablets can also scan with the camera. Variants, items sold by weight, quantity changes, line notes for the kitchen, customers with their group discount, and selling in any currency the business accepts. Managers can change a price or give a discount on a line.
+- **Selling.** Product grid with categories, search, and barcode scanning. USB, Bluetooth and built-in scanners type into the search box. Phones and tablets can also scan with the camera. Variants, wholesale packs (scanning a case barcode adds the case at the case price), restaurant choices (a side, extras: required ones must be picked), items sold by weight, quantity changes, line notes for the kitchen, customers with their group discount, and selling in any currency the business accepts. Managers can change a price or give a discount on a line.
 - **Payment.** Cash, card, mobile money or bank, in any accepted currency, split across several if needed. Quick cash buttons, and the change is worked out (in the currency of the last cash payment).
-- **Receipts.** Shown on screen. They print to 58 or 80 mm receipt printers through the system print dialog, or are shared as a PDF (WhatsApp, email). Set the paper width, and printing after every sale, in **Till settings**.
+- **Receipts.** Shown on screen, printed straight to a receipt printer (Bluetooth, USB, network, or a printer installed in Windows) or through the print dialog, or shared as a PDF (WhatsApp, email). A cash drawer plugged into the printer opens after cash sales. See [Printing](#printing).
 - **Shifts.** Open with the cash float, close with the cash count. Closing shows expected against counted cash per currency.
 - **Refunds.** Managers refund part or all of a sale, and choose whether the goods go back on the shelf.
 - **Works offline.** Products, prices and customers are kept on the device. With no internet, selling carries on. Sales are saved on the till and upload by themselves when the connection is back, and each one is recorded exactly once. Anyone who has signed in on the till before can sign in offline with their PIN. Receipts made offline carry the till's own number (T01-000042) until Floatly gives the sale its number.
@@ -32,7 +32,9 @@ What needs the internet: setting up a till, a person's first sign-in on a till, 
 | **Staff**: set each person's till PIN and stores | PIN sign-in |
 | **Stock**: products, variants, barcodes, prices, store prices, categories | Product grid and scanning |
 | **Settings → Tax rates and Currencies** | VAT on receipts; currencies to sell and take money in |
-| **Settings → Tills**: see each till and when it was last used; rename or switch one off | A switched-off till can't be signed in on |
+| **Stock → products**: packs (a case of 24 with its own barcode and price) and choice groups (sides, extras) | Packs by barcode or from the item; choices asked when the item is added |
+| **Settings → Tills**: see each till and when it was last used; rename or switch one off | A switched-off till signs its cashier out at once and can't be signed in on |
+| **Sales → Kitchen**: dishes to prepare | Choices and notes show on each ticket |
 | **Sales**: every sale, return and shift, with the till that made it | Sales upload as they happen |
 
 ## Running it on your computer
@@ -76,13 +78,21 @@ These need a Mac with Xcode: `flutter build ios` or `flutter build macos`.
 
 ## Printing
 
-Receipts go through the operating system's printing:
+Choose the printer in **Till settings → Receipt printer**, then tap **Print a test page**. Receipts go straight to it as ESC/POS, which nearly every receipt printer understands (Epson, Xprinter, Sunmi, iMin, Star in ESC/POS mode and most unbranded ones).
 
-- **Sunmi, iMin and other Android tills** with a built-in printer: install or enable the maker's print service (for Sunmi, "Sunmi Print Service" / built-in printer service). The printer then appears in the print dialog.
-- **USB, network and Bluetooth receipt printers**: install the printer's Android print plugin or Windows driver.
-- Set the paper width (58 or 80 mm) in **Till settings**.
+| Printer | Where | How to set it up |
+| --- | --- | --- |
+| **Sunmi built-in printer** | Android | Choose **Bluetooth**, then **InnerPrinter**. Most Sunmi models come with it already paired; if it isn't listed, turn Bluetooth on and look in Android's Bluetooth settings. |
+| **Bluetooth receipt printer** | Android | Pair it in Android's Bluetooth settings first (the PIN is usually 0000 or 1234), then choose **Bluetooth** and the printer. Allow "Nearby devices" when asked. |
+| **USB receipt printer** | Android | Plug it in, choose **USB** and the printer. Android asks once whether Floatly Till may use it. |
+| **Network receipt printer** (Wi-Fi or cable) | Android, Windows, iPad, Mac | Choose **Network** and type its IP address. Most printers print it on a self-test page: hold the feed button while switching on. Give it a fixed address on the router so it doesn't change. |
+| **Any printer installed in Windows** (USB, Bluetooth or network) | Windows | Install the maker's driver, then choose **Installed printer** and the printer. The driver must accept raw printing; receipt printer drivers do ("Generic / Text Only" also works). |
+| **Anything else** (an office printer, AirPrint) | All | Leave it on **Print dialog**. |
 
-Printing straight to ESC/POS printers without a dialog is a planned next step.
+- **Paper width** (58 or 80 mm) and **Print every receipt** are in **Till settings**.
+- **Cash drawer:** plug the drawer into the printer's drawer port and turn on **Open the cash drawer after cash sales**. Managers can also open it from the till menu (**Open cash drawer**).
+- Receipts print in plain letters (accents dropped) so they come out the same on every printer.
+- On iMin tills, use the iMin printer as a network or USB printer if it appears as one; otherwise use the print dialog with iMin's print service.
 
 ## Tests
 
@@ -90,9 +100,9 @@ Printing straight to ESC/POS printers without a dialog is a planned next step.
 flutter test
 ```
 
-These check the money maths and basket pricing against the same baskets the API's tests use, so offline totals match what the API records. They also run the till's screens: a full offline sale (scan, pay cash, give change, queue the sale), the phone layout, setup and PIN.
+These check the money maths and basket pricing against the same baskets the API's tests use, so offline totals match what the API records. They also run the till's screens: a full offline sale (scan, pay cash, give change, queue the sale), a case by its barcode and a burger with its required side, the phone layout, setup and PIN. The printing tests check the ESC/POS receipt, send one to a stand-in network printer, and (on Windows) list the installed printers through the print spooler.
 
-`test/live_api_test.dart` runs the real till code against a running API with the demo data. It pairs a till, signs in by PIN, sells and uploads, checks the API recorded the same total, refunds as a manager and closes the shift:
+`test/live_api_test.dart` runs the real till code against a running API with the demo data. It pairs a till, signs in by PIN, sells and uploads, checks the API recorded the same total, refunds as a manager, closes the shift, sells a case, and switches the till off to check the cashier is signed out at once:
 
 ```bash
 FLOATLY_LIVE_API=http://localhost:4000 flutter test test/live_api_test.dart
@@ -116,7 +126,12 @@ lib/
   state/till_state.dart   pairing, PIN sign-in (online and offline), catalog, basket, shifts, upload queue
   screens/                setup, PIN, till, payment, receipt, sales, refund, shifts, customers, settings, camera scanner
   widgets/                product grid, basket, logo, shared pieces
-  printing/receipt_pdf.dart   58/80 mm receipt
+  printing/
+    print_receipt.dart    prints the way the till is set up; cash drawer; test page
+    escpos.dart           receipts as ESC/POS for receipt printers
+    printers*.dart        network printers, Windows printers (windows_spooler.dart), Android Bluetooth/USB
+    receipt_pdf.dart      58/80 mm receipt for the print dialog and sharing
+android/app/src/main/kotlin/.../MainActivity.kt   Bluetooth and USB printing on Android
 tool/render_icons.dart    draws the app icon (then `dart run flutter_launcher_icons`)
 ```
 
@@ -135,7 +150,7 @@ tool/render_icons.dart    draws the app icon (then `dart run flutter_launcher_ic
 
 ## Next steps
 
-- Print straight to ESC/POS printers (Bluetooth, USB, network) and Sunmi/iMin built-in printers, and open the cash drawer.
-- ZIMRA fiscal receipts once the API sends sales to FDMS.
-- Wholesale packs (a case barcode adds 24) and restaurant choice groups, once the sales API takes them.
-- Open tables and kitchen tickets for restaurants.
+- ZIMRA fiscal receipts (with the QR code) once the API sends sales to FDMS.
+- Open tables and printed kitchen tickets for restaurants.
+- Wholesale quantity-break prices from price lists.
+- Bluetooth printing on iPhone and iPad (Bluetooth LE printers).

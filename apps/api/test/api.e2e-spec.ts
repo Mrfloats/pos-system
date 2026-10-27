@@ -1357,8 +1357,179 @@ describe('till app', () => {
     expect(again.body.id).toBe(first.body.id);
   });
 
-  it('stops a till signing in once it is switched off in the backoffice', async () => {
+  it('keeps a till session on its till: no swapping it for an ordinary one', async () => {
+    const t = auth((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '4321' }).expect(200)).body.accessToken);
+    const me = await http.get('/api/v1/auth/me').set(t).expect(200);
+    await http.post('/api/v1/auth/switch-tenant').set(t).send({ tenantId: me.body.tenant.id }).expect(403);
+  });
+
+  it('ends a signed-in till session as soon as the till is set up on another device', async () => {
+    const t = auth((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '4321' }).expect(200)).body.accessToken);
+    await http.get('/api/v1/till/catalog').query({ storeId: mainId }).set(t).expect(200);
+    deviceToken = (await http.post(`/api/v1/devices/${deviceId}/token`).set(ownerT).expect(201)).body.token;
+    const res = await http.get('/api/v1/till/catalog').query({ storeId: mainId }).set(t).expect(401);
+    expect(res.body.code).toBe('device_revoked');
+  });
+
+  it('ends signed-in till sessions and stops sign-ins once the till is switched off', async () => {
+    const t = auth((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '4321' }).expect(200)).body.accessToken);
     await http.patch(`/api/v1/devices/${deviceId}`).set(ownerT).send({ active: false }).expect(200);
-    await http.post('/api/v1/auth/till').send({ deviceToken, pin: '4321' }).expect(401);
+    expect((await http.get('/api/v1/auth/me').set(t).expect(401)).body.code).toBe('device_revoked');
+    expect((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '4321' }).expect(401)).body.code).toBe('device_revoked');
+    // The backoffice sign-in of the same business is untouched.
+    await http.get('/api/v1/devices').set(ownerT).expect(200);
+  });
+});
+
+describe('packs and choices', () => {
+  let t: Record<string, string>;
+  let storeId: string;
+  let coke: { variant: string; caseId: string; sixId: string };
+  let cheese: string;
+  let burger: string;
+  let side: { chips: string; salad: string };
+  let extra: { cheese: string; noOnion: string };
+  const S = '/api/v1/sales';
+  const onHand = async (variantId: string) =>
+    (await http.get('/api/v1/inventory/levels').query({ storeId, pageSize: 200 }).set(t)).body.items.find((i: any) => i.variantId === variantId)?.onHand;
+
+  beforeAll(async () => {
+    t = auth((await signup('Pack Shop', 'packshop@example.com', 'mixed')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(t)).body[0].id;
+    const c = await http
+      .post('/api/v1/products')
+      .set(t)
+      .send({
+        name: 'Coke 300ml',
+        variants: [
+          {
+            barcode: '600300',
+            price: '1.00',
+            costPrice: '0.60',
+            packagings: [
+              { name: 'Case of 24', quantity: 24, barcode: 'CASE24', price: '20.00' },
+              { name: 'Six pack', quantity: 6, barcode: 'SIX6' },
+            ],
+          },
+        ],
+      })
+      .expect(201);
+    const packs = c.body.variants[0].packagings;
+    coke = { variant: c.body.variants[0].id, caseId: packs.find((p: any) => p.quantity === '24.000').id, sixId: packs.find((p: any) => p.quantity === '6.000').id };
+    cheese = (await http.post('/api/v1/products').set(t).send({ name: 'Cheese slice', variants: [{ price: 0, costPrice: '0.30' }] }).expect(201)).body.variants[0].id;
+    await http
+      .post('/api/v1/inventory/movements')
+      .set(t)
+      .send({ storeId, type: 'receive', lines: [{ variantId: coke.variant, quantity: 100 }, { variantId: cheese, quantity: 20 }] })
+      .expect(201);
+
+    const sides = await http
+      .post('/api/v1/modifier-groups')
+      .set(t)
+      .send({ name: 'Side', minSelect: 1, maxSelect: 1, modifiers: [{ name: 'Chips' }, { name: 'Salad', priceDelta: '0.50' }] })
+      .expect(201);
+    const extras = await http
+      .post('/api/v1/modifier-groups')
+      .set(t)
+      .send({ name: 'Extras', minSelect: 0, maxSelect: 2, modifiers: [{ name: 'Cheese', priceDelta: '1.00', variantId: cheese }, { name: 'No onion' }] })
+      .expect(201);
+    const id = (g: any, name: string) => g.body.modifiers.find((m: any) => m.name === name).id;
+    side = { chips: id(sides, 'Chips'), salad: id(sides, 'Salad') };
+    extra = { cheese: id(extras, 'Cheese'), noOnion: id(extras, 'No onion') };
+    burger = (
+      await http
+        .post('/api/v1/products')
+        .set(t)
+        .send({ name: 'Burger', kind: 'menu_item', kitchenStation: 'grill', modifierGroupIds: [sides.body.id, extras.body.id], variants: [{ price: '6.50' }] })
+        .expect(201)
+    ).body.variants[0].id;
+  });
+
+  it('sells cases at the case price, taking every unit out of stock', async () => {
+    const sale = await http
+      .post(S)
+      .set(t)
+      .send({ storeId, lines: [{ variantId: coke.variant, packagingId: coke.caseId, quantity: 2 }], payments: [{ method: 'cash', amount: '40' }] })
+      .expect(201);
+    expect(sale.body).toMatchObject({ total: '40.00', costBase: '28.80' });
+    expect(sale.body.lines[0]).toMatchObject({ packName: 'Case of 24', unitsPerPack: '24.000', quantity: '2.000', unitPrice: '20.00' });
+    expect(await onHand(coke.variant)).toBe('52.000');
+
+    // A pack without its own price is the unit price times the units in it.
+    const six = await http
+      .post(S)
+      .set(t)
+      .send({ storeId, lines: [{ variantId: coke.variant, packagingId: coke.sixId, quantity: 1 }], payments: [{ method: 'cash', amount: '6' }] })
+      .expect(201);
+    expect(six.body.total).toBe('6.00');
+    expect(await onHand(coke.variant)).toBe('46.000');
+
+    // A refunded case goes back as 24 units, at the cost it was sold at.
+    const ret = await http
+      .post(`${S}/${sale.body.id}/returns`)
+      .set(t)
+      .send({ lines: [{ lineId: sale.body.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Too many' })
+      .expect(201);
+    expect(ret.body).toMatchObject({ total: '20.00', costBase: '14.40' });
+    expect(await onHand(coke.variant)).toBe('70.000');
+
+    const today = (await http.get('/api/v1/accounting/periods').set(t)).body.today;
+    const report = await http.get(`${S}/reports/profitability`).query({ from: today, to: today, by: 'item' }).set(t).expect(200);
+    expect(report.body.rows.find((r: any) => r.id === coke.variant).quantity).toBe('30.000');
+  });
+
+  it("refuses another item's pack, and choices on a pack", async () => {
+    await http.post(S).set(t).send({ storeId, lines: [{ variantId: cheese, packagingId: coke.caseId, quantity: 1 }], payments: [{ method: 'cash', amount: '20' }] }).expect(400);
+    await http
+      .post(S)
+      .set(t)
+      .send({ storeId, lines: [{ variantId: coke.variant, packagingId: coke.caseId, modifierIds: [side.chips], quantity: 1 }], payments: [{ method: 'cash', amount: '20' }] })
+      .expect(400);
+  });
+
+  it('adds the price of choices, uses up their stock and puts them on the kitchen ticket', async () => {
+    const sale = await http
+      .post(S)
+      .set(t)
+      .send({ storeId, lines: [{ variantId: burger, modifierIds: [side.salad, extra.cheese, extra.noOnion], quantity: 2 }], payments: [{ method: 'cash', amount: '20' }] })
+      .expect(201);
+    expect(sale.body.total).toBe('16.00');
+    expect(sale.body.costBase).toBe('0.60');
+    expect(sale.body.lines[0].modifiers.map((m: any) => `${m.groupName}: ${m.name}`)).toEqual(['Side: Salad', 'Extras: Cheese', 'Extras: No onion']);
+    expect(await onHand(cheese)).toBe('18.000');
+    const kitchen = await http.get(`${S}/kitchen`).set(t).expect(200);
+    expect(kitchen.body.tickets.find((k: any) => k.saleId === sale.body.id).lines[0].choices).toEqual(['Salad', 'Cheese', 'No onion']);
+
+    // Refunded with restocking: the cheese goes back.
+    await http
+      .post(`${S}/${sale.body.id}/returns`)
+      .set(t)
+      .send({ lines: [{ lineId: sale.body.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Wrong order' })
+      .expect(201);
+    expect(await onHand(cheese)).toBe('19.000');
+  });
+
+  it('checks the choices: required ones answered, no more than allowed, only ones offered', async () => {
+    const sell = (modifierIds: string[] | undefined, variantId = burger) =>
+      http.post(S).set(t).send({ storeId, lines: [{ variantId, modifierIds, quantity: 1 }], payments: [{ method: 'cash', amount: '20' }] });
+    expect((await sell([extra.cheese]).expect(400)).body.message).toContain('Choose one for "Side"');
+    await sell([side.chips, side.salad]).expect(400);
+    await sell([side.chips], coke.variant).expect(400);
+    // Left out entirely (an import, say): sold without choices.
+    expect((await sell(undefined).expect(201)).body.total).toBe('6.50');
+  });
+
+  it('gives the till each pack at its price and each item its choices', async () => {
+    const catalog = await http.get('/api/v1/till/catalog').query({ storeId }).set(t).expect(200);
+    const c = catalog.body.products.find((p: any) => p.name === 'Coke 300ml');
+    expect(c.variants[0].packagings.map((p: any) => [p.name, p.barcode, p.price])).toEqual([
+      ['Six pack', 'SIX6', '6.00'],
+      ['Case of 24', 'CASE24', '20.00'],
+    ]);
+    const b = catalog.body.products.find((p: any) => p.name === 'Burger');
+    expect(b.modifierGroups.map((g: any) => [g.name, g.minSelect, g.maxSelect, g.modifiers.map((m: any) => `${m.name} ${m.priceDelta}`)])).toEqual([
+      ['Side', 1, 1, ['Chips 0.00', 'Salad 0.50']],
+      ['Extras', 0, 2, ['Cheese 1.00', 'No onion 0.00']],
+    ]);
   });
 });

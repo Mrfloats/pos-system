@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../state/till_state.dart';
 import '../widgets/common.dart';
+import 'printer_screen.dart';
 
 /// What this till is linked to, receipt printing, and (managers) unpairing.
 class SettingsScreen extends StatelessWidget {
@@ -47,6 +48,17 @@ class SettingsScreen extends StatelessWidget {
             ]),
             section('Receipts', [
               ListTile(
+                leading: const Icon(Icons.print_outlined),
+                title: const Text('Receipt printer'),
+                subtitle: Text(
+                  state.settings.direct
+                      ? '${state.settings.printer.label}: ${state.settings.printerName.isEmpty ? state.settings.printerAddress : state.settings.printerName}'
+                      : 'Print dialog',
+                ),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const PrinterScreen())),
+              ),
+              ListTile(
                 leading: const Icon(Icons.receipt_outlined),
                 title: const Text('Paper width'),
                 trailing: SegmentedButton<int>(
@@ -63,9 +75,9 @@ class SettingsScreen extends StatelessWidget {
                 ),
               ),
               SwitchListTile(
-                secondary: const Icon(Icons.print_outlined),
+                secondary: const Icon(Icons.auto_mode_outlined),
                 title: const Text('Print every receipt'),
-                subtitle: const Text('Opens printing as soon as a sale is complete'),
+                subtitle: Text(state.settings.direct ? 'Prints as soon as a sale is complete' : 'Opens printing as soon as a sale is complete'),
                 value: state.settings.autoPrint,
                 onChanged: (v) {
                   state.settings.autoPrint = v;

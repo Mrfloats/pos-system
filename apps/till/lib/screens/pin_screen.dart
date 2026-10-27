@@ -172,17 +172,27 @@ class _PinScreenState extends State<PinScreen> {
                   ],
                 ),
               ),
-              if (state.notice != null)
+              if (state.revoked != null || state.notice != null)
                 Positioned(
                   left: 16,
-                  right: 16,
+                  right: 56,
                   top: 12,
                   child: Material(
-                    color: Brand.amberSoft,
+                    color: state.revoked != null ? scheme.errorContainer : Brand.amberSoft,
                     borderRadius: BorderRadius.circular(12),
                     child: Padding(
-                      padding: const EdgeInsets.all(12),
-                      child: Text(state.notice!, style: TextStyle(color: scheme.onSurface)),
+                      padding: const EdgeInsets.fromLTRB(14, 10, 8, 10),
+                      child: Row(
+                        children: [
+                          Expanded(
+                            child: Text(
+                              state.revoked ?? state.notice!,
+                              style: TextStyle(color: state.revoked != null ? scheme.onErrorContainer : scheme.onSurface),
+                            ),
+                          ),
+                          if (state.revoked != null) TextButton(onPressed: _setUpAgain, child: const Text('Set up again')),
+                        ],
+                      ),
                     ),
                   ),
                 ),

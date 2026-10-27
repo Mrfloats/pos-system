@@ -5,6 +5,7 @@ import '../models/catalog.dart';
 import '../screens/scanner_screen.dart';
 import '../theme.dart';
 import 'common.dart';
+import 'item_options.dart';
 
 /// Search or scan, pick a category, tap a product.
 class ProductPanel extends StatefulWidget {
@@ -33,12 +34,12 @@ class _ProductPanelState extends State<ProductPanel> {
     final catalog = TillScope.read(context).catalog!;
     final hit = catalog.lookup(code);
     if (hit != null) {
-      _add(hit.product, hit.variant);
+      _add(hit);
       _search.clear();
     } else {
       final matches = catalog.search(code, categoryId: _categoryId);
       if (matches.length == 1 && matches.first.variants.length == 1) {
-        _add(matches.first, matches.first.variants.first);
+        _add((product: matches.first, variant: matches.first.variants.first, pack: null));
         _search.clear();
       } else if (matches.isEmpty) {
         showMessage(context, 'Nothing found for "$code"', error: true);
@@ -55,54 +56,32 @@ class _ProductPanelState extends State<ProductPanel> {
   }
 
   Future<void> _tap(Product p) async {
-    var variant = p.variants.first;
-    if (p.variants.length > 1) {
-      final chosen = await _chooseVariant(p);
-      if (chosen == null) return;
-      variant = chosen;
-    }
-    if (!mounted) return;
-    await _add(p, variant);
+    Sellable? item = (product: p, variant: p.variants.first, pack: null);
+    if (p.hasOptions) item = await chooseOption(context, p);
+    if (item == null || !mounted) return;
+    await _add(item);
     // Keep the search box ready for the barcode scanner (on phones this would pop up the keyboard).
     if (mounted && isWide(context)) _searchFocus.requestFocus();
   }
 
-  Future<void> _add(Product p, Variant v) async {
+  /// Asks for the item's sides and extras, and how much of something sold by weight, then adds it.
+  Future<void> _add(Sellable item) async {
     final state = TillScope.read(context);
+    final p = item.product;
+    var choices = const <Choice>[];
+    if (item.pack == null && p.choiceGroups.isNotEmpty) {
+      final picked = await askChoices(context, p, item.variant, state.saleCurrency);
+      if (picked == null) return;
+      choices = picked;
+    }
     var quantity = 1000;
-    if (p.partQuantities) {
-      final q = await askQuantity(context, p.nameOf(v), unit: p.unit);
+    if (item.pack == null && p.partQuantities) {
+      if (!mounted) return;
+      final q = await askQuantity(context, p.nameOf(item.variant), unit: p.unit);
       if (q == null) return;
       quantity = q;
     }
-    state.addItem(p, v, quantity: quantity);
-  }
-
-  Future<Variant?> _chooseVariant(Product p) {
-    final state = TillScope.read(context);
-    final currency = state.saleCurrency;
-    return showModalBottomSheet<Variant>(
-      context: context,
-      showDragHandle: true,
-      builder: (context) => SafeArea(
-        child: ListView(
-          shrinkWrap: true,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(20, 0, 20, 8),
-              child: Text(p.name, style: Theme.of(context).textTheme.titleMedium!.copyWith(fontWeight: FontWeight.w600)),
-            ),
-            for (final v in p.variants)
-              ListTile(
-                title: Text(v.name),
-                subtitle: v.sku == null ? null : Text(v.sku!),
-                trailing: Text(formatMoney(currency.isBase ? v.price : fromBase(v.price, currency.rate), currency.label), style: tabular),
-                onTap: () => Navigator.pop(context, v),
-              ),
-          ],
-        ),
-      ),
-    );
+    state.addItem(p, item.variant, quantity: quantity, pack: item.pack, choices: choices);
   }
 
   @override

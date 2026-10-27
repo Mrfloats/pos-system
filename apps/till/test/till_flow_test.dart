@@ -124,4 +124,52 @@ void main() {
     expect(find.text(r'Charge $13.86'), findsOneWidget);
     state.dispose();
   });
+
+  testWidgets('sells a case by its barcode and a burger with its required side, and uploads both as chosen', (tester) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final state = await offlineTill();
+    await tester.pumpWidget(TillApp(state: state));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).first, 'CASE500');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    expect(find.text('Water 500ml · Case of 24'), findsOneWidget);
+    expect(find.text(r'Charge $10.00'), findsOneWidget);
+
+    // The burger asks for a side; Add stays off until one is chosen.
+    await tester.tap(find.text('Burger'));
+    await tester.pumpAndSettle();
+    expect(find.text('Choose the required options'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilterChip, r'Salad  +$0.50'));
+    await tester.tap(find.widgetWithText(FilterChip, r'Cheese  +$1.00'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(r'Add · $8.00'));
+    await tester.pumpAndSettle();
+    expect(find.textContaining('Salad, Cheese'), findsOneWidget);
+    expect(find.text(r'Charge $18.00'), findsOneWidget);
+
+    await tester.tap(find.text(r'Charge $18.00'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(ActionChip, r'$20.00'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Complete sale'));
+    await tester.pumpAndSettle();
+
+    expect(state.outbox.single.payload['lines'], [
+      {'variantId': 'v-water', 'packagingId': 'k-water-24', 'quantity': '1.000', 'unitPrice': '10.00', 'discount': '0.00'},
+      {
+        'variantId': 'v-burger',
+        'modifierIds': ['m-salad', 'm-cheese'],
+        'quantity': '1.000',
+        'unitPrice': '8.00',
+        'discount': '0.00',
+      },
+    ]);
+    expect(find.text('Salad, Cheese'), findsOneWidget, reason: 'on the receipt');
+    state.dispose();
+  });
 }

@@ -9,7 +9,7 @@ import '../models/receipt.dart';
 
 /// Prints on the till's receipt printer through the system print dialog
 /// (Android print services, Windows and macOS printers, AirPrint).
-Future<void> printReceipt(Receipt r, {required int paperWidth}) => Printing.layoutPdf(
+Future<void> printReceiptPdf(Receipt r, {required int paperWidth}) => Printing.layoutPdf(
   name: 'Receipt ${r.number ?? r.reference}',
   format: _format(paperWidth),
   onLayout: (_) => receiptPdf(r, paperWidth: paperWidth),
@@ -78,6 +78,7 @@ Future<Uint8List> receiptPdf(Receipt r, {required int paperWidth}) async {
           for (final l in r.lines) ...[
             pw.Text(_latin(l.name), style: base),
             row('  ${formatQty(l.quantity)} x ${m(l.unitPrice)}${l.discount > 0 ? '  less ${m(l.discount)}' : ''}', m(l.total)),
+            if (l.choices.isNotEmpty) pw.Text('  ${_latin(l.choices.join(', '))}', style: base),
             if (l.note != null) pw.Text('  ${_latin(l.note!)}', style: base.copyWith(fontStyle: pw.FontStyle.italic)),
           ],
           rule(),

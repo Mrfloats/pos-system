@@ -772,7 +772,11 @@ export function SaleView({ id }: { id: string }) {
               {s.lines!.map((l) => (
                 <tr key={l.id}>
                   <Td>
-                    <span className="font-medium">{l.variantName !== "Default" ? `${l.productName} · ${l.variantName}` : l.productName}</span>
+                    <span className="font-medium">
+                      {l.variantName !== "Default" ? `${l.productName} · ${l.variantName}` : l.productName}
+                      {l.packName && ` · ${l.packName}`}
+                    </span>
+                    {l.modifiers && l.modifiers.length > 0 && <span className="block text-xs text-ink-soft">{l.modifiers.map((m) => m.name).join(", ")}</span>}
                     <span className="block text-xs text-ink-faint">
                       {l.taxRateName ?? "No tax"}
                       {Number(l.returnedQuantity) > 0 && <span className="ml-2 font-medium text-amber-ink">{qty(l.returnedQuantity)} returned</span>}

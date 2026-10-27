@@ -3,7 +3,7 @@ import 'catalog.dart';
 
 /// One item in the basket.
 class CartLine {
-  CartLine({required this.product, required this.variant, required this.quantity}) : key = _nextKey++;
+  CartLine({required this.product, required this.variant, required this.quantity, this.pack, this.choices = const []}) : key = _nextKey++;
 
   static int _nextKey = 0;
 
@@ -12,8 +12,24 @@ class CartLine {
   final Product product;
   final Variant variant;
 
+  /// Sold as this pack: [quantity] then counts packs.
+  final Pack? pack;
+
+  /// Sides and extras chosen, in the order the groups are asked.
+  final List<Choice> choices;
+
   /// Thousandths: 1 item is 1000, 0.25 kg is 250.
   int quantity;
+
+  /// Sold in parts (kg, litres) rather than whole items or packs.
+  bool get partQuantities => pack == null && product.partQuantities;
+
+  /// The shelf price of one, base-currency cents: the pack's price, or the item's plus its choices.
+  int get basePrice => pack?.price ?? variant.price + choices.fold(0, (a, c) => a + c.priceDelta);
+
+  /// Same item, same pack, same choices: scanning it again adds to this line.
+  bool sameAs(Variant v, Pack? p, List<Choice> c) =>
+      variant.id == v.id && pack?.id == p?.id && choices.map((x) => x.id).join(',') == c.map((x) => x.id).join(',');
 
   /// Price per unit typed in by a manager, sale-currency cents. Null: the shelf price.
   int? unitPrice;
@@ -23,7 +39,7 @@ class CartLine {
 
   String? note;
 
-  String get name => product.nameOf(variant);
+  String get name => pack == null ? product.nameOf(variant) : '${product.nameOf(variant)} · ${pack!.name}';
   bool get plain => unitPrice == null && discount == null && (note ?? '').isEmpty;
 }
 
@@ -78,7 +94,7 @@ PricedCart priceCart({required List<CartLine> lines, required Currency currency,
   final priced = [
     for (final l in lines)
       () {
-        final unitPrice = l.unitPrice ?? (currency.isBase ? l.variant.price : fromBase(l.variant.price, rate));
+        final unitPrice = l.unitPrice ?? (currency.isBase ? l.basePrice : fromBase(l.basePrice, rate));
         final gross = divRound(l.quantity * unitPrice, 1000);
         final discount = (l.discount ?? (groupPct > 0 ? divRound(gross * groupPct, 10000) : 0)).clamp(0, gross);
         final amount = gross - discount;

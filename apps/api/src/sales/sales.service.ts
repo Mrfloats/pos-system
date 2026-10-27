@@ -249,6 +249,7 @@ export class SalesService {
           ? toCents(pack.price)
           : divRound(shelf * perPack, 1000n)
         : shelf + sum(picks.map((p) => toCents(p.modifier.priceDelta)));
+      if (baseUnit < 0n) throw new BadRequestException(`The choices on "${v.productName}" take its price below zero`);
       const unitPrice = l.unitPrice !== undefined ? toCents(l.unitPrice) : currency.isBase ? baseUnit : fromBase(baseUnit, currency.rate);
       const gross = divRound(q * unitPrice, 1000n);
       const discount = l.discount !== undefined ? toCents(l.discount) : groupPct ? divRound(gross * groupPct, 10_000n) : 0n;

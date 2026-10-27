@@ -12,11 +12,15 @@ import '../core/money.dart';
 import '../models/catalog.dart';
 import '../models/receipt.dart';
 import '../models/sale.dart';
+import '../printing/printers.dart';
 
 /// Sent with every sale so the backoffice can tell which till version made it.
 const appVersion = 'till-1.0.0';
 
 const _managerRoles = {'owner', 'admin', 'manager'};
+
+/// The API's code for a till that was switched off or set up on another device.
+const _deviceRevoked = 'device_revoked';
 const _sellerRoles = {'owner', 'admin', 'manager', 'cashier', 'waiter'};
 
 /// Which business, store and till this device was paired as.
@@ -97,13 +101,41 @@ class PendingSale {
 class TillSettings {
   TillSettings({this.paperWidth = 80, this.autoPrint = false});
 
-  TillSettings.fromJson(Map<String, dynamic> j) : paperWidth = j['paperWidth'] as int? ?? 80, autoPrint = j['autoPrint'] as bool? ?? false;
+  TillSettings.fromJson(Map<String, dynamic> j)
+    : paperWidth = j['paperWidth'] as int? ?? 80,
+      autoPrint = j['autoPrint'] as bool? ?? false,
+      printer = PrinterKind.parse(j['printer'] as String?),
+      printerAddress = j['printerAddress'] as String? ?? '',
+      printerName = j['printerName'] as String? ?? '',
+      openDrawer = j['openDrawer'] as bool? ?? false;
 
   /// Receipt roll width in millimetres: 58 or 80.
   int paperWidth;
   bool autoPrint;
 
-  Map<String, dynamic> toJson() => {'paperWidth': paperWidth, 'autoPrint': autoPrint};
+  /// How receipts print: the system dialog, or straight to a receipt printer.
+  PrinterKind printer = PrinterKind.system;
+
+  /// Which printer: an IP address, Bluetooth address, USB vendor:product or Windows printer name.
+  String printerAddress = '';
+
+  /// The printer's name, to show in settings.
+  String printerName = '';
+
+  /// Open the cash drawer (plugged into the printer) when a cash sale is complete.
+  bool openDrawer = false;
+
+  /// Receipts go straight to a receipt printer rather than the print dialog.
+  bool get direct => printer != PrinterKind.system && printerAddress.isNotEmpty;
+
+  Map<String, dynamic> toJson() => {
+    'paperWidth': paperWidth,
+    'autoPrint': autoPrint,
+    'printer': printer.name,
+    'printerAddress': printerAddress,
+    'printerName': printerName,
+    'openDrawer': openDrawer,
+  };
 }
 
 /// A PIN that worked on this till before, kept (hashed) so the same person can
@@ -155,6 +187,9 @@ class TillState extends ChangeNotifier {
 
   /// Something everyone should see, such as a lapsed subscription.
   String? notice;
+
+  /// Why this till can no longer be used (switched off in the backoffice). Cleared by setting it up again.
+  String? revoked;
 
   final List<CartLine> cart = [];
   Customer? customer;
@@ -224,6 +259,7 @@ class TillState extends ChangeNotifier {
     }
     device = config;
     _deviceToken = deviceToken;
+    revoked = null;
     await store.writeSecret('device_token', deviceToken);
     await store.writeJson('device', config.toJson());
     session = null;
@@ -270,6 +306,10 @@ class TillState extends ChangeNotifier {
       unawaited(_afterOnlineSignIn());
       return null;
     } on ApiException catch (e) {
+      if (e.code == _deviceRevoked) {
+        await _revoke(e.message);
+        return e.message;
+      }
       if (!e.isOffline) {
         online = true;
         notifyListeners();
@@ -302,6 +342,16 @@ class TillState extends ChangeNotifier {
       // Shown through [online] and [notice]; the till still works from what it has saved.
     }
     await sync();
+  }
+
+  /// The till was switched off in the backoffice, or set up on another device: sign out,
+  /// and forget the PINs kept for offline sign-in so nobody can carry on without the internet.
+  /// Sales still waiting stay, to upload once the till is set up again.
+  Future<void> _revoke(String message) async {
+    revoked = message;
+    _knownPins = [];
+    await store.delete('pins');
+    lock();
   }
 
   /// Signs out, so the next person enters their PIN. The basket stays.
@@ -353,6 +403,7 @@ class TillState extends ChangeNotifier {
       notifyListeners();
       return true;
     } on ApiException catch (e) {
+      if (e.code == _deviceRevoked) await _revoke(e.message);
       online = !e.isOffline;
       notifyListeners();
       return false;
@@ -373,6 +424,10 @@ class TillState extends ChangeNotifier {
       return result;
     } on ApiException catch (e) {
       _setOnline(!e.isOffline);
+      if (e.code == _deviceRevoked) {
+        await _revoke(e.message);
+        rethrow;
+      }
       if (e.status == 401) {
         if (await _reauth()) return fn(Api(server: device!.server, token: s.token));
         // The PIN no longer works (changed or removed): sales wait until someone signs in again.
@@ -457,8 +512,9 @@ class TillState extends ChangeNotifier {
 
   PricedCart get priced => priceCart(lines: cart, currency: saleCurrency, taxRates: catalog!.taxRates, customer: customer);
 
-  void addItem(Product product, Variant variant, {int quantity = 1000}) {
-    final same = product.partQuantities ? null : cart.where((l) => l.variant.id == variant.id && l.plain).firstOrNull;
+  void addItem(Product product, Variant variant, {int quantity = 1000, Pack? pack, List<Choice> choices = const []}) {
+    final partQuantities = pack == null && product.partQuantities;
+    final same = partQuantities ? null : cart.where((l) => l.plain && l.sameAs(variant, pack, choices)).firstOrNull;
     if (same != null) {
       same.quantity += quantity;
       // The line just added to moves to the bottom, where the cashier is looking.
@@ -466,7 +522,7 @@ class TillState extends ChangeNotifier {
         ..remove(same)
         ..add(same);
     } else {
-      cart.add(CartLine(product: product, variant: variant, quantity: quantity));
+      cart.add(CartLine(product: product, variant: variant, quantity: quantity, pack: pack, choices: choices));
     }
     notifyListeners();
   }
@@ -568,6 +624,9 @@ class TillState extends ChangeNotifier {
         for (final l in cart.lines)
           {
             'variantId': l.line.variant.id,
+            'packagingId': ?l.line.pack?.id,
+            // Sent whenever the item has choices (even none picked), so Floatly checks the required ones.
+            if (l.line.product.choiceGroups.isNotEmpty) 'modifierIds': [for (final c in l.line.choices) c.id],
             'quantity': formatFixed(l.line.quantity, 3),
             'unitPrice': fromCents(l.unitPrice),
             'discount': fromCents(l.discount),

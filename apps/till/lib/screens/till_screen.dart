@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../core/api.dart';
 import '../core/money.dart';
+import '../printing/print_receipt.dart';
+import '../printing/printers.dart';
 import '../theme.dart';
 import '../widgets/cart_panel.dart';
 import '../widgets/common.dart';
@@ -25,6 +27,14 @@ class _TillScreenState extends State<TillScreen> {
   void _lock() {
     Navigator.of(context).popUntil((r) => r.isFirst);
     TillScope.read(context).lock();
+  }
+
+  Future<void> _openDrawer() async {
+    try {
+      await openCashDrawer(TillScope.read(context).settings);
+    } on PrinterException catch (e) {
+      if (mounted) showMessage(context, e.message, error: true);
+    }
   }
 
   Future<void> _refresh() async {
@@ -150,6 +160,8 @@ class _TillScreenState extends State<TillScreen> {
                   closeShift(context);
                 case 'refresh':
                   _refresh();
+                case 'drawer':
+                  _openDrawer();
                 case 'settings':
                   Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
                 case 'lock':
@@ -166,6 +178,11 @@ class _TillScreenState extends State<TillScreen> {
                 PopupMenuItem(
                   value: 'close',
                   child: ListTile(leading: const Icon(Icons.stop_circle_outlined), title: Text('Close shift ${state.shift!.number}')),
+                ),
+              if (session.canManage && state.settings.direct)
+                const PopupMenuItem(
+                  value: 'drawer',
+                  child: ListTile(leading: Icon(Icons.lock_open_outlined), title: Text('Open cash drawer')),
                 ),
               const PopupMenuItem(
                 value: 'refresh',

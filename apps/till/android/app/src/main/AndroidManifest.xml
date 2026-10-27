@@ -4,6 +4,13 @@
     <!-- Scans barcodes with the camera on phones and tablets (tills with a built-in scanner don't need it). -->
     <uses-permission android:name="android.permission.CAMERA"/>
     <uses-feature android:name="android.hardware.camera" android:required="false"/>
+    <!-- Prints receipts on paired Bluetooth printers (and the built-in printer of Sunmi tills). -->
+    <uses-permission android:name="android.permission.BLUETOOTH" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" android:maxSdkVersion="30"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+    <uses-feature android:name="android.hardware.bluetooth" android:required="false"/>
+    <!-- Prints receipts on USB printers. -->
+    <uses-feature android:name="android.hardware.usb.host" android:required="false"/>
     <application
         android:label="Floatly Till"
         android:name="${applicationName}"

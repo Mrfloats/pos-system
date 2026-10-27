@@ -2,7 +2,15 @@ import 'catalog.dart';
 import 'sale.dart';
 
 class ReceiptLine {
-  ReceiptLine({required this.name, required this.quantity, required this.unitPrice, required this.discount, required this.total, this.note});
+  ReceiptLine({
+    required this.name,
+    required this.quantity,
+    required this.unitPrice,
+    required this.discount,
+    required this.total,
+    this.note,
+    this.choices = const [],
+  });
 
   ReceiptLine.fromJson(Map<String, dynamic> j)
     : name = j['name'] as String,
@@ -10,13 +18,25 @@ class ReceiptLine {
       unitPrice = j['unitPrice'] as int,
       discount = j['discount'] as int,
       total = j['total'] as int,
-      note = j['note'] as String?;
+      note = j['note'] as String?,
+      choices = [for (final c in j['choices'] as List? ?? const []) c as String];
 
   final String name;
   final int quantity, unitPrice, discount, total;
   final String? note;
 
-  Map<String, dynamic> toJson() => {'name': name, 'quantity': quantity, 'unitPrice': unitPrice, 'discount': discount, 'total': total, 'note': note};
+  /// Sides and extras, e.g. "Salad", "Cheese".
+  final List<String> choices;
+
+  Map<String, dynamic> toJson() => {
+    'name': name,
+    'quantity': quantity,
+    'unitPrice': unitPrice,
+    'discount': discount,
+    'total': total,
+    'note': note,
+    'choices': choices,
+  };
 }
 
 class ReceiptPayment {
@@ -101,7 +121,15 @@ class Receipt {
       symbol: cart.currency.label,
       lines: [
         for (final l in cart.lines)
-          ReceiptLine(name: l.line.name, quantity: l.line.quantity, unitPrice: l.unitPrice, discount: l.discount, total: l.total, note: l.line.note),
+          ReceiptLine(
+            name: l.line.name,
+            quantity: l.line.quantity,
+            unitPrice: l.unitPrice,
+            discount: l.discount,
+            total: l.total,
+            note: l.line.note,
+            choices: [for (final c in l.line.choices) c.name],
+          ),
       ],
       subtotal: cart.subtotal,
       discountTotal: cart.discountTotal,

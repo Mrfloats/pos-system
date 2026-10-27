@@ -144,11 +144,12 @@ class _LineRow extends StatelessWidget {
     final l = line.line;
     final scheme = Theme.of(context).colorScheme;
     final details = [
-      '${formatQty(l.quantity)}${l.product.unit != null && l.product.partQuantities ? ' ${l.product.unit}' : ''} × ${formatMoney(line.unitPrice, symbol)}',
+      '${formatQty(l.quantity)}${l.product.unit != null && l.partQuantities ? ' ${l.product.unit}' : ''} × ${formatMoney(line.unitPrice, symbol)}',
       if (line.discount > 0) '−${formatMoney(line.discount, symbol)}',
+      if (l.choices.isNotEmpty) l.choices.map((c) => c.name).join(', '),
       if (l.note != null) l.note!,
     ].join(' · ');
-    final step = l.product.partQuantities ? null : 1000;
+    final step = l.partQuantities ? null : 1000;
 
     return InkWell(
       onTap: () => editLine(context, l),
@@ -224,11 +225,11 @@ Future<void> editLine(BuildContext context, CartLine line) async {
     showDragHandle: true,
     builder: (context) {
       void save() {
-        final q = tryParseFixed(qty.text, line.product.partQuantities ? 3 : 0);
+        final q = tryParseFixed(qty.text, line.partQuantities ? 3 : 0);
         if (q == null || q <= 0) return;
         state.updateLine(
           line,
-          quantity: line.product.partQuantities ? q : q * 1000,
+          quantity: line.partQuantities ? q : q * 1000,
           unitPrice: canManage && price.text.trim().isNotEmpty ? tryParseFixed(price.text, 2) : null,
           discount: canManage && discount.text.trim().isNotEmpty ? tryParseFixed(discount.text, 2) : null,
           note: note.text,
@@ -245,14 +246,14 @@ Future<void> editLine(BuildContext context, CartLine line) async {
             children: [
               Text(line.name, style: Theme.of(context).textTheme.titleMedium!.copyWith(fontWeight: FontWeight.w600)),
               Text(
-                'Shelf price ${formatMoney(state.saleCurrency.isBase ? line.variant.price : fromBase(line.variant.price, state.saleCurrency.rate), symbol)}',
+                'Shelf price ${formatMoney(state.saleCurrency.isBase ? line.basePrice : fromBase(line.basePrice, state.saleCurrency.rate), symbol)}',
                 style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 16),
               AmountField(
                 controller: qty,
-                label: 'Quantity${line.product.unit != null && line.product.partQuantities ? ' (${line.product.unit})' : ''}',
-                decimals: line.product.partQuantities ? 3 : 0,
+                label: 'Quantity${line.product.unit != null && line.partQuantities ? ' (${line.product.unit})' : ''}',
+                decimals: line.partQuantities ? 3 : 0,
                 autofocus: true,
               ),
               const SizedBox(height: 12),

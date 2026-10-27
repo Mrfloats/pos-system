@@ -24,7 +24,7 @@ Point of sale and backoffice for **retail shops, wholesalers and restaurants**.
 - **Suppliers and purchases.** A purchase is a supplier bill for stock: it receives the goods into a store at their cost (and can update cost prices), records what is owed or pays it on the spot, and posts straight to Stock and VAT. Purchase bills can be imported from CSV; voiding a purchase takes its goods back out.
 - **Audit log** of who changed what.
 - **Backoffice screens:** sign in, sign up, overview, products (list, add, edit), categories, stock, customers, staff and settings (business, stores, tills, tax rates, currencies).
-- **Till app** ([apps/till](apps/till/README.md)) for Android countertop tills, phones and tablets, Windows PCs, and iPhones, iPads and Macs. An owner sets a till up once by signing in on it. Staff then sign in with their till PIN. It sells with barcode scanning, customers and discounts, and any currency. Payments can be split across cash, card, mobile money and bank. It prints or shares receipts and runs shifts with cash-up. Managers can do refunds. It keeps selling with no internet and uploads each sale exactly once when the connection is back.
+- **Till app** ([apps/till](apps/till/README.md)) for Android countertop tills, phones and tablets, Windows PCs, and iPhones, iPads and Macs. An owner sets a till up once by signing in on it. Staff then sign in with their till PIN. It sells with barcode scanning, wholesale cases, restaurant sides and extras, customers and discounts, and any currency. Payments can be split across cash, card, mobile money and bank. It prints straight to Bluetooth, USB, network and Windows receipt printers (including Sunmi built-in printers), opens the cash drawer, and runs shifts with cash-up. Managers can do refunds. It keeps selling with no internet and uploads each sale exactly once when the connection is back.
 
 ## Run it on your computer
 
@@ -92,7 +92,7 @@ New businesses don't open straight away. The sign-up page sends a **request** wi
 npm run test:api
 ```
 
-The 84 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog and synced sales.
+The 91 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 
@@ -136,10 +136,9 @@ When a request links to another record by id (category, store, variant…), chec
 
 ## Next steps
 
-1. **Till printing:** straight to ESC/POS printers (Bluetooth, USB, network) and Sunmi/iMin built-in printers, with the cash drawer. Today receipts go through the system print dialog.
-2. **ZIMRA FDMS fiscalisation** and **Paynow** (EcoCash, OneMoney, InnBucks).
-3. **Restaurants on the till:** open tables, kitchen tickets, and choice groups; wholesale packs by case barcode (both need the sales API to take them).
-4. Backoffice screens for price lists, modifier groups and stock transfers. The API endpoints already exist.
+1. **ZIMRA FDMS fiscalisation** and **Paynow** (EcoCash, OneMoney, InnBucks).
+2. **Restaurants on the till:** open tables and printed kitchen tickets.
+3. Backoffice screens for price lists, modifier groups and stock transfers. The API endpoints already exist.
 
 ## Putting it online
 

@@ -18,7 +18,7 @@ interface Ticket {
   soldAt: string;
   note: string | null;
   storeName: string;
-  lines: { id: string; productName: string; variantName: string; quantity: string; station: string | null; status: Status; note: string | null }[];
+  lines: { id: string; productName: string; variantName: string; quantity: string; station: string | null; status: Status; note: string | null; choices: string[] }[];
 }
 
 const COLUMNS: { status: Exclude<Status, "served">; title: string; next: Status; action: string; tone: string }[] = [
@@ -110,6 +110,7 @@ export default function KitchenPage() {
                               <span>
                                 <span className="font-semibold tabular-nums">{qty(l.quantity)}×</span> {l.productName}
                                 {l.variantName !== "Default" && ` · ${l.variantName}`}
+                                {l.choices?.length > 0 && <span className="block text-xs text-ink-soft">{l.choices.join(", ")}</span>}
                                 {l.note && <span className="block text-xs text-amber-ink">{l.note}</span>}
                               </span>
                               {l.station && <span className="shrink-0 rounded-full bg-paper px-2 py-0.5 text-[11px] text-ink-soft">{l.station}</span>}
