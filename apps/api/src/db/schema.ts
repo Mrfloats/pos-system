@@ -32,6 +32,7 @@ import {
   primaryKey,
   text,
   timestamp,
+  unique,
   uniqueIndex,
   uuid,
 } from 'drizzle-orm/pg-core';
@@ -468,12 +469,15 @@ export const priceListItems = pgTable(
     variantId: uuid('variant_id')
       .notNull()
       .references(() => productVariants.id, { onDelete: 'cascade' }),
-    /** Price applies from this quantity upwards (quantity breaks for wholesale). */
+    /** The price of one of this pack (a case of 24…) rather than of a single item. */
+    packagingId: uuid('packaging_id').references(() => productPackagings.id, { onDelete: 'cascade' }),
+    /** Price applies from this quantity upwards (quantity breaks for wholesale); for a pack, how many packs. */
     minQuantity: qty('min_quantity').notNull().default('1'),
     price: money('price').notNull(),
   },
   (t) => [
-    uniqueIndex('price_list_items_uq').on(t.priceListId, t.variantId, t.minQuantity),
+    // One price per list, item (or pack) and quantity; NULLS NOT DISTINCT so single-item prices (no pack) are unique too.
+    unique('price_list_items_uq').on(t.priceListId, t.variantId, t.packagingId, t.minQuantity).nullsNotDistinct(),
     tenantIsolation(t),
   ],
 );
@@ -1046,6 +1050,8 @@ export const sales = pgTable(
     customerId: uuid('customer_id').references(() => customers.id, { onDelete: 'set null' }),
     /** Name and tax details printed on the receipt (kept even if the customer record changes). */
     customerName: text('customer_name').notNull().default('Cash Customer'),
+    /** Prices came from this price list (Wholesale…); null for normal (retail) prices. */
+    priceListId: uuid('price_list_id').references(() => priceLists.id, { onDelete: 'set null' }),
     salespersonId: uuid('salesperson_id').references(() => users.id, { onDelete: 'set null' }),
     /** For a return: the sale being refunded. For a sale made from a quotation: that quotation. */
     originalSaleId: uuid('original_sale_id'),

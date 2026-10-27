@@ -6,7 +6,8 @@ import '../theme.dart';
 import '../widgets/common.dart';
 
 /// The Floatly server most businesses use.
-const defaultServer = 'https://floatly-api.vercel.app';
+/// For testing against another server: flutter run --dart-define=FLOATLY_SERVER=http://localhost:4000
+const defaultServer = String.fromEnvironment('FLOATLY_SERVER', defaultValue: 'https://floatly-api.vercel.app');
 
 enum _Step { signIn, business, store, device }
 

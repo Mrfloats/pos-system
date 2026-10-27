@@ -8,6 +8,10 @@ Map<String, dynamic> catalogJson() => {
     {'code': 'USD', 'name': 'US Dollar', 'symbol': r'$', 'rateToBase': '1.000000', 'isBase': true},
     {'code': 'ZWG', 'name': 'Zimbabwe Gold', 'symbol': 'ZiG', 'rateToBase': '26.500000', 'isBase': false},
   ],
+  'priceLists': [
+    {'id': 'pl-retail', 'name': 'Retail', 'isDefault': true},
+    {'id': 'pl-wholesale', 'name': 'Wholesale', 'isDefault': false},
+  ],
   'taxRates': [
     {'id': 'vat', 'name': 'VAT 15.5%', 'code': 'VAT', 'rate': '15.50', 'inclusive': true},
     {'id': 'addvat', 'name': 'VAT added', 'code': 'VATX', 'rate': '15.50', 'inclusive': false},
@@ -75,7 +79,21 @@ Map<String, dynamic> catalogJson() => {
           'price': '0.50',
           'isDefault': true,
           'packagings': [
-            {'id': 'k-water-24', 'name': 'Case of 24', 'quantity': '24.000', 'barcode': 'CASE500', 'price': '10.00'},
+            {
+              'id': 'k-water-24',
+              'name': 'Case of 24',
+              'quantity': '24.000',
+              'barcode': 'CASE500',
+              'price': '10.00',
+              'ownPrice': true,
+              'listPrices': [
+                {'priceListId': 'pl-wholesale', 'minQuantity': '1.000', 'price': '8.50'},
+              ],
+            },
+          ],
+          'listPrices': [
+            {'priceListId': 'pl-wholesale', 'minQuantity': '1.000', 'price': '0.40'},
+            {'priceListId': 'pl-wholesale', 'minQuantity': '24.000', 'price': '0.35'},
           ],
         },
       ],
@@ -118,6 +136,7 @@ Map<String, dynamic> catalogJson() => {
   ],
   'customers': [
     {'id': 'c-tendai', 'name': 'Tendai', 'phone': '0772000000', 'tin': null, 'vatNumber': null, 'discountPercent': '10.00'},
+    {'id': 'c-moyo', 'name': 'Moyo Traders', 'phone': null, 'tin': null, 'vatNumber': null, 'discountPercent': null, 'priceListId': 'pl-wholesale'},
     {'id': 'c-chipo', 'name': 'Chipo', 'phone': null, 'tin': '2000999999', 'vatNumber': null, 'discountPercent': null},
   ],
   'syncedAt': '2026-10-26T10:00:00.000Z',

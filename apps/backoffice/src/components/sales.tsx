@@ -25,7 +25,7 @@ import { useEffect, useId, useRef, useState } from "react";
 import { StoreSelect } from "@/components/stock";
 import { useToast } from "@/components/toast";
 import { Badge, Button, Checkbox, Dialog, Field, FormError, Input, Select, Spinner, Table, TableMessage, Td, Textarea, Th } from "@/components/ui";
-import { api, Currency, Customer, Page, PaymentMethod, Product, Sale, SaleStatus, SaleType } from "@/lib/api";
+import { api, Currency, Customer, Page, PaymentMethod, PriceList, Product, Sale, SaleStatus, SaleType } from "@/lib/api";
 import { dateTime, money, qty } from "@/lib/format";
 import { MANAGERS, useSession } from "@/lib/session";
 
@@ -293,6 +293,8 @@ interface CartLine {
 interface Preview {
   currencyCode: string;
   rate: string;
+  /** The price list that priced it (chosen, or the customer's); null for normal prices. */
+  priceListId: string | null;
   lines: { variantId: string; unitPrice: string; discount: string; net: string; tax: string; total: string; taxRateName: string | null }[];
   subtotal: string;
   discountTotal: string;
@@ -410,6 +412,8 @@ export function SaleEditor({ mode }: { mode: "sale" | "quotation" }) {
   const [storeId, setStoreId] = useState(currentStore ?? "");
   const [customerId, setCustomerId] = useState("");
   const [customerName, setCustomerName] = useState("");
+  /** "" uses the customer's prices (Wholesale for a wholesale customer), else normal prices. */
+  const [priceListId, setPriceListId] = useState("");
   const [currencyCode, setCurrencyCode] = useState(base);
   const [lines, setLines] = useState<CartLine[]>([]);
   const [pays, setPays] = useState<PayDraft[]>([]);
@@ -425,6 +429,8 @@ export function SaleEditor({ mode }: { mode: "sale" | "quotation" }) {
 
   const customers = useQuery({ queryKey: ["customers", "all"], queryFn: () => api<Page<Customer>>("/customers", { query: { pageSize: 200 } }) });
   const currencies = useQuery({ queryKey: ["currencies"], queryFn: () => api<Currency[]>("/currencies") });
+  const priceLists = useQuery({ queryKey: ["price-lists"], queryFn: () => api<PriceList[]>("/price-lists") });
+  const activeLists = priceLists.data?.filter((l) => l.active) ?? [];
   const rateOf = (code: string) => currencies.data?.find((c) => c.code === code)?.rateToBase ?? "1";
 
   // Lines with a quantity are priced; the preview comes back in the same order.
@@ -432,6 +438,7 @@ export function SaleEditor({ mode }: { mode: "sale" | "quotation" }) {
   const body = {
     storeId,
     customerId: customerId || undefined,
+    priceListId: priceListId || undefined,
     currencyCode,
     lines: priced.map((l) => ({ variantId: l.variantId, quantity: l.quantity, unitPrice: l.unitPrice || undefined, discount: l.discount || undefined })),
   };
@@ -580,6 +587,27 @@ export function SaleEditor({ mode }: { mode: "sale" | "quotation" }) {
               </Select>
             )}
           </Field>
+          {activeLists.length > 1 && (
+            <Field
+              label="Prices"
+              hint={
+                !priceListId && pv?.priceListId
+                  ? `${activeLists.find((l) => l.id === pv.priceListId)?.name ?? "This customer's"} prices, set for this customer.`
+                  : undefined
+              }
+            >
+              {(id) => (
+                <Select id={id} value={priceListId} onChange={(e) => setPriceListId(e.target.value)}>
+                  <option value="">The customer&apos;s prices</option>
+                  {activeLists.map((l) => (
+                    <option key={l.id} value={l.id}>
+                      {l.name}
+                    </option>
+                  ))}
+                </Select>
+              )}
+            </Field>
+          )}
           {!customerId && <Field label="Name on receipt (optional)">{(id) => <Input id={id} value={customerName} onChange={(e) => setCustomerName(e.target.value)} />}</Field>}
           <Field label="Sell in">
             {(id) => (

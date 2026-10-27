@@ -62,6 +62,7 @@ class CartPanel extends StatelessWidget {
               ],
             ),
           ),
+          if (catalog.hasPriceChoice) const Padding(padding: EdgeInsets.fromLTRB(12, 2, 12, 8), child: PriceListSwitch()),
           const Divider(height: 1),
           Expanded(
             child: cart.isEmpty
@@ -127,6 +128,32 @@ class CartPanel extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+/// Retail or Wholesale prices (or any other price list) for the sale.
+class PriceListSwitch extends StatelessWidget {
+  const PriceListSwitch({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final state = TillScope.of(context);
+    final lists = state.catalog!.priceLists;
+    return SizedBox(
+      width: double.infinity,
+      child: SegmentedButton<String>(
+        segments: [
+          for (final l in lists)
+            ButtonSegment(
+              value: l.id,
+              label: Text('${l.name} prices', overflow: TextOverflow.ellipsis),
+            ),
+        ],
+        selected: {state.priceList?.id ?? lists.first.id},
+        showSelectedIcon: false,
+        onSelectionChanged: (s) => state.setPriceList(s.first),
       ),
     );
   }
@@ -246,7 +273,7 @@ Future<void> editLine(BuildContext context, CartLine line) async {
             children: [
               Text(line.name, style: Theme.of(context).textTheme.titleMedium!.copyWith(fontWeight: FontWeight.w600)),
               Text(
-                'Shelf price ${formatMoney(state.saleCurrency.isBase ? line.basePrice : fromBase(line.basePrice, state.saleCurrency.rate), symbol)}',
+                'Shelf price ${formatMoney(state.saleCurrency.isBase ? line.basePrice(state.priceListId) : fromBase(line.basePrice(state.priceListId), state.saleCurrency.rate), symbol)}',
                 style: TextStyle(color: Theme.of(context).colorScheme.onSurfaceVariant),
               ),
               const SizedBox(height: 16),

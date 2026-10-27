@@ -15,6 +15,21 @@ void main() {
   CartLine line(Sellable s, int quantity, {List<Choice> choices = const []}) =>
       CartLine(product: s.product, variant: s.variant, quantity: quantity, pack: s.pack, choices: choices);
 
+  test('prices wholesale from the price list, with its quantity breaks, and retail otherwise', () {
+    final water = c.lookup('600500')!;
+    int total(int quantity, String? list) => priceCart(lines: [line(water, quantity)], currency: usd, taxRates: c.taxRates, priceListId: list).total;
+    expect(total(2000, null), 100);
+    expect(total(2000, 'pl-retail'), 100);
+    expect(total(2000, 'pl-wholesale'), 80);
+    // From 24 the cheaper break applies.
+    expect(total(30000, 'pl-wholesale'), 1050);
+    // No wholesale price set: the normal price.
+    expect(priceCart(lines: [line(coke, 1000)], currency: usd, taxRates: c.taxRates, priceListId: 'pl-wholesale').total, 100);
+    // The case has its own retail and wholesale prices.
+    expect(priceCart(lines: [line(c.lookup('CASE500')!, 1000)], currency: usd, taxRates: c.taxRates).total, 1000);
+    expect(priceCart(lines: [line(c.lookup('CASE500')!, 2000)], currency: usd, taxRates: c.taxRates, priceListId: 'pl-wholesale').total, 1700);
+  });
+
   test('a case barcode sells the case at its own price', () {
     final hit = c.lookup('CASE500')!;
     expect(hit.pack!.name, 'Case of 24');

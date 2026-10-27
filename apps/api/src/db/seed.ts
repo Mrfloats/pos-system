@@ -18,7 +18,7 @@ import type { AuthContext } from '../common/auth-context.js';
 import { InventoryService } from '../inventory/inventory.js';
 import { StaffService, StoresService } from '../organization/organization.service.js';
 import { DbService } from './db.service.js';
-import { customers, users } from './schema.js';
+import { customers, priceLists, users } from './schema.js';
 
 const EMAIL = 'demo@pos.local';
 const PASSWORD = 'demo1234';
@@ -79,6 +79,9 @@ async function main() {
     ['Dish Soap 750ml', household.id, '6001067000110', '1.80', '1.10', 3],
   ];
 
+  // Wholesale prices for items and their packs, 10% under retail, on the Wholesale price list every wholesale business gets.
+  const [wholesale] = await dbs.withTenant(ctx, (tx) => tx.select({ id: priceLists.id }).from(priceLists).where(eq(priceLists.name, 'Wholesale')));
+
   for (const [name, categoryId, barcode, price, cost, stock, pack] of items) {
     const p = await products.create(ctx, {
       name,
@@ -90,7 +93,17 @@ async function main() {
           price,
           costPrice: cost,
           reorderLevel: '5',
-          packagings: pack ? [{ name: pack[0], quantity: String(pack[1]), price: pack[2] }] : undefined,
+          listPrices: wholesale ? [{ priceListId: wholesale.id, price: (Number(price) * 0.9).toFixed(2) }] : undefined,
+          packagings: pack
+            ? [
+                {
+                  name: pack[0],
+                  quantity: String(pack[1]),
+                  price: pack[2],
+                  listPrices: wholesale ? [{ priceListId: wholesale.id, price: (Number(pack[2]) * 0.9).toFixed(2) }] : undefined,
+                },
+              ]
+            : undefined,
         },
       ],
     });

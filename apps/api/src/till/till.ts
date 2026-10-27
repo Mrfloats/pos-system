@@ -3,7 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 import { and, asc, desc, eq, sql } from 'drizzle-orm';
 import { type AuthContext, Ctx, FRONT_OF_HOUSE, Roles } from '../common/auth-context.js';
-import { divRound, fromCents, parseFixed, toCents } from '../accounting/money.js';
+import { divRound, fromCents, parseFixed, toBase, toCents } from '../accounting/money.js';
 import { found } from '../common/validation.js';
 import { DbService } from '../db/db.service.js';
 import {
@@ -13,6 +13,8 @@ import {
   customers,
   modifierGroups,
   modifiers,
+  priceListItems,
+  priceLists,
   productModifierGroups,
   productPackagings,
   products,
@@ -118,13 +120,14 @@ export class TillService {
         .from(productPackagings)
         .orderBy(asc(productPackagings.quantity));
       const priceOf = new Map(variantRows.map((v) => [v.id, v.price]));
-      const packsByVariant = new Map<string, { id: string; name: string; quantity: string; barcode: string | null; price: string }[]>();
+      const packsByVariant = new Map<string, { id: string; name: string; quantity: string; barcode: string | null; price: string; ownPrice: boolean }[]>();
       for (const p of packRows) {
         const unit = priceOf.get(p.variantId);
         if (unit === undefined) continue;
         const price = p.price ?? fromCents(divRound(toCents(unit) * parseFixed(p.quantity, 3), 1000n));
         const list = packsByVariant.get(p.variantId) ?? packsByVariant.set(p.variantId, []).get(p.variantId)!;
-        list.push({ id: p.id, name: p.name, quantity: p.quantity, barcode: p.barcode, price });
+        // ownPrice false: priced from the unit price, so on a price list it follows that list's unit price.
+        list.push({ id: p.id, name: p.name, quantity: p.quantity, barcode: p.barcode, price, ownPrice: p.price !== null });
       }
 
       // Restaurant choices offered on each product, groups and options in order.
@@ -151,10 +154,50 @@ export class TillService {
         });
       }
 
+      // Price lists (Retail, Wholesale…) and each item's prices on them, with quantity breaks, in the base currency.
+      const lists = await tx
+        .select({ id: priceLists.id, name: priceLists.name, isDefault: priceLists.isDefault, currencyCode: priceLists.currencyCode })
+        .from(priceLists)
+        .where(eq(priceLists.active, true))
+        .orderBy(desc(priceLists.isDefault), asc(priceLists.name));
+      const rates = new Map(currencyRows.map((c) => [c.code, c]));
+      const listItems = lists.length
+        ? await tx
+            .select({
+              priceListId: priceListItems.priceListId,
+              variantId: priceListItems.variantId,
+              packagingId: priceListItems.packagingId,
+              minQuantity: priceListItems.minQuantity,
+              price: priceListItems.price,
+            })
+            .from(priceListItems)
+            .innerJoin(priceLists, eq(priceLists.id, priceListItems.priceListId))
+            .where(eq(priceLists.active, true))
+            .orderBy(asc(priceListItems.minQuantity))
+        : [];
+      const listCurrency = new Map(lists.map((l) => [l.id, l.currencyCode]));
+      // Keyed by variant for single items, by pack for packs.
+      const listPricesByVariant = new Map<string, { priceListId: string; minQuantity: string; price: string }[]>();
+      const listPricesByPack = new Map<string, { priceListId: string; minQuantity: string; price: string }[]>();
+      for (const i of listItems) {
+        const c = rates.get(listCurrency.get(i.priceListId)!);
+        // A list in a currency the business no longer takes can't be priced.
+        if (!c) continue;
+        const price = c.isBase ? i.price : fromCents(toBase(toCents(i.price), c.rateToBase));
+        const byKey = i.packagingId ? listPricesByPack : listPricesByVariant;
+        const key = i.packagingId ?? i.variantId;
+        const list = byKey.get(key) ?? byKey.set(key, []).get(key)!;
+        list.push({ priceListId: i.priceListId, minQuantity: i.minQuantity, price });
+      }
+
       const variantsByProduct = new Map<string, unknown[]>();
       for (const { productId, ...v } of variantRows) {
         const list = variantsByProduct.get(productId) ?? variantsByProduct.set(productId, []).get(productId)!;
-        list.push({ ...v, packagings: packsByVariant.get(v.id) ?? [] });
+        list.push({
+          ...v,
+          packagings: (packsByVariant.get(v.id) ?? []).map((p) => ({ ...p, listPrices: listPricesByPack.get(p.id) ?? [] })),
+          listPrices: listPricesByVariant.get(v.id) ?? [],
+        });
       }
 
       const customerRows = await tx
@@ -165,6 +208,8 @@ export class TillService {
           tin: customers.tin,
           vatNumber: customers.vatNumber,
           discountPercent: customerGroups.discountPercent,
+          // Their own price list, else their group's.
+          priceListId: sql<string | null>`coalesce(${customers.priceListId}, ${customerGroups.priceListId})`,
         })
         .from(customers)
         .leftJoin(customerGroups, eq(customerGroups.id, customers.groupId))
@@ -176,6 +221,7 @@ export class TillService {
         tenant,
         store,
         currencies: currencyRows,
+        priceLists: lists.map(({ currencyCode, ...l }) => l),
         taxRates: taxRows,
         categories: categoryRows,
         products: productRows

@@ -24,8 +24,14 @@ class CartLine {
   /// Sold in parts (kg, litres) rather than whole items or packs.
   bool get partQuantities => pack == null && product.partQuantities;
 
-  /// The shelf price of one, base-currency cents: the pack's price, or the item's plus its choices.
-  int get basePrice => pack?.price ?? variant.price + choices.fold(0, (a, c) => a + c.priceDelta);
+  /// The shelf price of one, base-currency cents, the way the API works it out: the item's price on
+  /// [priceListId] for this many units (its quantity breaks), else its normal price; a pack's own
+  /// price, else that unit price × the units in it; plus the choices.
+  int basePrice(String? priceListId) {
+    final p = pack;
+    if (p != null) return variant.packPrice(p, priceListId, quantity);
+    return variant.priceFor(priceListId, quantity) + choices.fold(0, (a, c) => a + c.priceDelta);
+  }
 
   /// Same item, same pack, same choices: scanning it again adds to this line.
   bool sameAs(Variant v, Pack? p, List<Choice> c) =>
@@ -88,13 +94,20 @@ class PricedCart {
 /// Prices the basket exactly as the API does (SalesService.priceLines): shelf
 /// price converted to the sale currency, the customer group's discount unless
 /// one was typed in, then tax taken out of (or added to) the amount.
-PricedCart priceCart({required List<CartLine> lines, required Currency currency, required Map<String, TaxRate> taxRates, Customer? customer}) {
+PricedCart priceCart({
+  required List<CartLine> lines,
+  required Currency currency,
+  required Map<String, TaxRate> taxRates,
+  Customer? customer,
+  String? priceListId,
+}) {
   final rate = currency.rate;
   final groupPct = customer?.discountHundredths ?? 0;
   final priced = [
     for (final l in lines)
       () {
-        final unitPrice = l.unitPrice ?? (currency.isBase ? l.basePrice : fromBase(l.basePrice, rate));
+        final shelf = l.basePrice(priceListId);
+        final unitPrice = l.unitPrice ?? (currency.isBase ? shelf : fromBase(shelf, rate));
         final gross = divRound(l.quantity * unitPrice, 1000);
         final discount = (l.discount ?? (groupPct > 0 ? divRound(gross * groupPct, 10000) : 0)).clamp(0, gross);
         final amount = gross - discount;

@@ -240,6 +240,7 @@ class ReceiptView extends StatelessWidget {
             row('Cashier', r.cashier, style: muted),
             if (r.customerName != null) row('Customer', r.customerName!, style: muted),
             if (r.customerTin != null) row('Customer TIN', r.customerTin!, style: muted),
+            if (r.priceListName != null) row('Prices', r.priceListName!, style: muted),
             const _Dashes(),
             for (final l in r.lines)
               Padding(

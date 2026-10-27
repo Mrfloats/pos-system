@@ -6,7 +6,7 @@ import { useRouter } from "next/navigation";
 import { useState } from "react";
 import { useToast } from "@/components/toast";
 import { Button, Checkbox, Field, FormError, Input, Section, Select, Textarea } from "@/components/ui";
-import { api, Category, ModifierGroup, Product, ProductKind, TaxRate, Unit } from "@/lib/api";
+import { api, Category, ModifierGroup, PriceList, Product, ProductKind, TaxRate, Unit } from "@/lib/api";
 import { MANAGERS, useSession } from "@/lib/session";
 
 interface PackForm {
@@ -15,6 +15,8 @@ interface PackForm {
   quantity: string;
   barcode: string;
   price: string;
+  /** Price of one pack on each extra price list (Wholesale…), by list id. */
+  listPrices: Record<string, string>;
 }
 interface VariantForm {
   id?: string;
@@ -25,6 +27,8 @@ interface VariantForm {
   costPrice: string;
   reorderLevel: string;
   packagings: PackForm[];
+  /** Price from 1 unit on each extra price list (Wholesale…), by list id. Empty: the normal price. */
+  listPrices: Record<string, string>;
 }
 
 const emptyVariant = (): VariantForm => ({
@@ -35,6 +39,7 @@ const emptyVariant = (): VariantForm => ({
   costPrice: "",
   reorderLevel: "",
   packagings: [],
+  listPrices: {},
 });
 
 const KINDS: { value: ProductKind; label: string; hint: string }[] = [
@@ -43,6 +48,13 @@ const KINDS: { value: ProductKind; label: string; hint: string }[] = [
   { value: "menu_item", label: "Menu item", hint: "A dish or drink made in the kitchen or bar" },
   { value: "bundle", label: "Bundle", hint: "Several items sold together" },
 ];
+
+/** Pack row columns: name, units, barcode, the retail price, one price per extra price list, remove. */
+const PACK_COLUMNS: Record<number, string> = {
+  0: "sm:grid-cols-[2fr_1fr_2fr_1fr_auto]",
+  1: "sm:grid-cols-[2fr_1fr_2fr_1fr_1fr_auto]",
+  2: "sm:grid-cols-[2fr_1fr_2fr_1fr_1fr_1fr_auto]",
+};
 
 const blank = (s: string) => (s.trim() === "" ? undefined : s.trim());
 
@@ -59,6 +71,10 @@ export function ProductForm({ product }: { product?: Product }) {
   const taxRates = useQuery({ queryKey: ["tax-rates"], queryFn: () => api<TaxRate[]>("/tax-rates") });
   const units = useQuery({ queryKey: ["units"], queryFn: () => api<Unit[]>("/units") });
   const modifierGroups = useQuery({ queryKey: ["modifier-groups"], queryFn: () => api<ModifierGroup[]>("/modifier-groups") });
+  const priceLists = useQuery({ queryKey: ["price-lists"], queryFn: () => api<PriceList[]>("/price-lists") });
+  // The normal price is the default list (Retail); every other list gets its own price field.
+  const retailList = priceLists.data?.find((l) => l.isDefault);
+  const extraLists = priceLists.data?.filter((l) => l.active && !l.isDefault) ?? [];
 
   const [form, setForm] = useState({
     name: product?.name ?? "",
@@ -90,7 +106,9 @@ export function ProductForm({ product }: { product?: Product }) {
               quantity: String(Number(p.quantity)),
               barcode: p.barcode ?? "",
               price: p.price ?? "",
+              listPrices: Object.fromEntries((p.listPrices ?? []).filter((l) => Number(l.minQuantity) === 1).map((l) => [l.priceListId, l.price])),
             })),
+            listPrices: Object.fromEntries((v.listPrices ?? []).filter((l) => Number(l.minQuantity) === 1).map((l) => [l.priceListId, l.price])),
           }))
       : [emptyVariant()],
   );
@@ -122,11 +140,14 @@ export function ProductForm({ product }: { product?: Product }) {
           price: v.price.trim(),
           costPrice: blank(v.costPrice),
           reorderLevel: blank(v.reorderLevel),
+          // Empty takes the item off that list (back to the normal price); its quantity breaks stay.
+          listPrices: extraLists.map((l) => ({ priceListId: l.id, price: blank(v.listPrices[l.id] ?? "") ?? null })),
           packagings: v.packagings.map((p) => ({
             name: p.name.trim(),
             quantity: p.quantity.trim(),
             barcode: blank(p.barcode),
             price: blank(p.price),
+            listPrices: extraLists.map((l) => ({ priceListId: l.id, price: blank(p.listPrices[l.id] ?? "") ?? null })),
           })),
         })),
       };
@@ -242,9 +263,10 @@ export function ProductForm({ product }: { product?: Product }) {
         <Section
           title="Prices and barcodes"
           description={
-            variants.length > 1
+            (variants.length > 1
               ? "Each variant has its own price, barcode and stock."
-              : "Add variants for sizes or flavours that are priced or stocked separately."
+              : "Add variants for sizes or flavours that are priced or stocked separately.") +
+            (priceLists.data && !extraLists.length ? " To sell at wholesale prices too, add a Wholesale price list under Stock → Price lists." : "")
           }
           actions={
             <Button type="button" variant="secondary" onClick={() => setVariants([...variants, emptyVariant()])}>
@@ -261,11 +283,36 @@ export function ProductForm({ product }: { product?: Product }) {
                       {(id) => <Input id={id} placeholder="e.g. 2 litre" value={v.name} onChange={(e) => setVariant(i, { name: e.target.value })} />}
                     </Field>
                   )}
-                  <Field label={`Price (${session.tenant.baseCurrency})`}>
+                  <Field label={`${extraLists.length ? `${retailList?.name ?? "Retail"} price` : "Price"} (${session.tenant.baseCurrency})`}>
                     {(id) => (
                       <Input id={id} required inputMode="decimal" pattern="\d+(\.\d{1,2})?" title="An amount like 4.50" value={v.price} onChange={(e) => setVariant(i, { price: e.target.value })} />
                     )}
                   </Field>
+                  {extraLists.map((l) => {
+                    const breaks = product?.variants.find((pv) => pv.id === v.id)?.listPrices?.filter((p) => p.priceListId === l.id && Number(p.minQuantity) > 1).length ?? 0;
+                    return (
+                      <Field
+                        key={l.id}
+                        label={`${l.name} price (${l.currencyCode})`}
+                        hint={
+                          breaks
+                            ? `Plus ${breaks} quantity ${breaks === 1 ? "break" : "breaks"} under Stock → Price lists.`
+                            : `Empty: sold at the ${(retailList?.name ?? "retail").toLowerCase()} price.`
+                        }
+                      >
+                        {(id) => (
+                          <Input
+                            id={id}
+                            inputMode="decimal"
+                            pattern="\d+(\.\d{1,2})?"
+                            title="An amount like 3.90"
+                            value={v.listPrices[l.id] ?? ""}
+                            onChange={(e) => setVariant(i, { listPrices: { ...v.listPrices, [l.id]: e.target.value } })}
+                          />
+                        )}
+                      </Field>
+                    );
+                  })}
                   <Field label="Cost price">
                     {(id) => (
                       <Input id={id} inputMode="decimal" pattern="\d+(\.\d{1,2})?" title="An amount like 3.10" value={v.costPrice} onChange={(e) => setVariant(i, { costPrice: e.target.value })} />
@@ -289,9 +336,12 @@ export function ProductForm({ product }: { product?: Product }) {
                 {(isWholesale || v.packagings.length > 0) && form.kind === "standard" && (
                   <div className="mt-4 rounded-md bg-paper p-3">
                     <p className="text-sm font-medium">Wholesale packs</p>
-                    <p className="text-xs text-ink-soft">Sell this item by the case or bale with its own barcode and price.</p>
+                    <p className="text-xs text-ink-soft">
+                      Sell this item by the case or bale with its own barcode and price{extraLists.length ? `s (${[retailList?.name ?? "Retail", ...extraLists.map((l) => l.name)].join(" and ").toLowerCase()})` : ""}.
+                      Empty prices are worked out from the single item&apos;s price × units in the pack.
+                    </p>
                     {v.packagings.map((p, pi) => (
-                      <div key={pi} className="mt-3 grid items-end gap-2 sm:grid-cols-[2fr_1fr_2fr_1fr_auto]">
+                      <div key={pi} className={`mt-3 grid items-end gap-2 ${PACK_COLUMNS[extraLists.length] ?? "sm:grid-cols-3"}`}>
                         <Field label="Pack name">
                           {(id) => <Input id={id} required placeholder="Case of 24" value={p.name} onChange={(e) => setPack(i, pi, { name: e.target.value })} />}
                         </Field>
@@ -301,9 +351,23 @@ export function ProductForm({ product }: { product?: Product }) {
                         <Field label="Pack barcode">
                           {(id) => <Input id={id} value={p.barcode} onChange={(e) => setPack(i, pi, { barcode: e.target.value })} />}
                         </Field>
-                        <Field label="Pack price">
+                        <Field label={extraLists.length ? `${retailList?.name ?? "Retail"} price` : "Pack price"}>
                           {(id) => <Input id={id} inputMode="decimal" value={p.price} onChange={(e) => setPack(i, pi, { price: e.target.value })} />}
                         </Field>
+                        {extraLists.map((l) => (
+                          <Field key={l.id} label={`${l.name} price`}>
+                            {(id) => (
+                              <Input
+                                id={id}
+                                inputMode="decimal"
+                                pattern="\d+(\.\d{1,2})?"
+                                title="An amount like 20.00"
+                                value={p.listPrices[l.id] ?? ""}
+                                onChange={(e) => setPack(i, pi, { listPrices: { ...p.listPrices, [l.id]: e.target.value } })}
+                              />
+                            )}
+                          </Field>
+                        ))}
                         <Button
                           type="button"
                           variant="ghost"
@@ -318,7 +382,7 @@ export function ProductForm({ product }: { product?: Product }) {
                       type="button"
                       variant="ghost"
                       className="mt-2 -ml-2"
-                      onClick={() => setVariant(i, { packagings: [...v.packagings, { name: "", quantity: "", barcode: "", price: "" }] })}
+                      onClick={() => setVariant(i, { packagings: [...v.packagings, { name: "", quantity: "", barcode: "", price: "", listPrices: {} }] })}
                     >
                       <Plus className="size-4" aria-hidden /> Add pack
                     </Button>

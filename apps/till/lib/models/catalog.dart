@@ -85,7 +85,8 @@ class Variant {
       barcode = _str(j['barcode']),
       price = toCents(j['price']),
       isDefault = j['isDefault'] as bool? ?? false,
-      packs = [for (final p in j['packagings'] as List? ?? const []) Pack.fromJson((p as Map).cast())];
+      packs = [for (final p in j['packagings'] as List? ?? const []) Pack.fromJson((p as Map).cast())],
+      listPrices = [for (final l in j['listPrices'] as List? ?? const []) ListPrice.fromJson((l as Map).cast())];
 
   final String id, name;
   final String? sku, barcode;
@@ -96,6 +97,63 @@ class Variant {
 
   /// Wholesale packs of this variant (a case of 24…).
   final List<Pack> packs;
+
+  /// Prices on price lists (Wholesale…), with quantity breaks, lowest first.
+  final List<ListPrice> listPrices;
+
+  /// One unit's price, base-currency cents: on [priceListId] for [units] (thousandths), its biggest
+  /// break that applies; without a list, or with no price on it, the normal (retail) price.
+  /// A pack's price: its own, else the unit price on [priceListId] × the units in it.
+  /// For [packs] of them, the way the API works it out: its price on [priceListId] for that many packs,
+  /// else its own price, else the unit price on the list × the units in it.
+  int packPrice(Pack p, String? priceListId, [int packs = 1000]) {
+    final listed = _best(p.listPrices, priceListId, packs);
+    if (listed != null) return listed;
+    if (p.ownPrice) return p.price;
+    return divRound(priceFor(priceListId, divRound(packs * p.units, 1000)) * p.units, 1000);
+  }
+
+  int priceFor(String? priceListId, [int units = 1000]) => _best(listPrices, priceListId, units) ?? price;
+}
+
+/// The price on [priceListId] for [quantity] (thousandths): the biggest quantity break that applies.
+int? _best(List<ListPrice> prices, String? priceListId, int quantity) {
+  if (priceListId == null) return null;
+  int? best;
+  var bestMin = -1;
+  for (final l in prices) {
+    if (l.priceListId == priceListId && l.minQuantity <= quantity && l.minQuantity > bestMin) {
+      best = l.price;
+      bestMin = l.minQuantity;
+    }
+  }
+  return best;
+}
+
+/// A variant's price on a price list from a quantity upwards.
+class ListPrice {
+  ListPrice.fromJson(Map<String, dynamic> j)
+    : priceListId = j['priceListId'] as String,
+      minQuantity = parseFixed(j['minQuantity'], 3),
+      price = toCents(j['price']);
+
+  final String priceListId;
+
+  /// Thousandths: 50000 means from 50.
+  final int minQuantity;
+
+  /// Base-currency cents.
+  final int price;
+}
+
+/// A set of prices: Retail (the normal prices), Wholesale…
+class PriceList {
+  PriceList.fromJson(Map<String, dynamic> j) : id = j['id'] as String, name = j['name'] as String, isDefault = j['isDefault'] as bool? ?? false;
+
+  final String id, name;
+
+  /// The normal prices (Retail).
+  final bool isDefault;
 }
 
 /// The same variant sold as a case or carton, with its own barcode and price.
@@ -105,7 +163,9 @@ class Pack {
       name = j['name'] as String,
       units = parseFixed(j['quantity'], 3),
       barcode = _str(j['barcode']),
-      price = toCents(j['price']);
+      price = toCents(j['price']),
+      ownPrice = j['ownPrice'] as bool? ?? true,
+      listPrices = [for (final l in j['listPrices'] as List? ?? const []) ListPrice.fromJson((l as Map).cast())];
 
   final String id, name;
 
@@ -115,6 +175,12 @@ class Pack {
 
   /// Price of one pack at this store, base-currency cents.
   final int price;
+
+  /// The pack has a price of its own; otherwise it is the unit price × units (on the sale's price list).
+  final bool ownPrice;
+
+  /// The pack's own prices on price lists (Wholesale…).
+  final List<ListPrice> listPrices;
 }
 
 /// A restaurant choice: "Choose a side" (exactly 1), "Extras" (up to 3)…
@@ -178,7 +244,8 @@ class Customer {
       phone = _str(j['phone']),
       tin = _str(j['tin']),
       vatNumber = _str(j['vatNumber']),
-      discountPercent = j['discountPercent']?.toString();
+      discountPercent = j['discountPercent']?.toString(),
+      priceListId = j['priceListId'] as String?;
 
   final String id, name;
   final String? phone, tin, vatNumber;
@@ -186,10 +253,21 @@ class Customer {
   /// The customer group's discount, e.g. "10.00".
   final String? discountPercent;
 
+  /// Their prices (Wholesale…): their own price list, else their group's.
+  final String? priceListId;
+
   /// Hundredths of a percent, 0 when none.
   int get discountHundredths => toCents(discountPercent);
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'phone': phone, 'tin': tin, 'vatNumber': vatNumber, 'discountPercent': discountPercent};
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'phone': phone,
+    'tin': tin,
+    'vatNumber': vatNumber,
+    'discountPercent': discountPercent,
+    'priceListId': priceListId,
+  };
 }
 
 /// What a tap or a scan adds: a variant, sold singly or as one of its packs.
@@ -203,6 +281,7 @@ class Catalog {
       business = Business.fromJson((j['tenant'] as Map).cast()),
       store = StoreInfo.fromJson((j['store'] as Map).cast()),
       currencies = [for (final c in j['currencies'] as List) Currency.fromJson((c as Map).cast())],
+      priceLists = [for (final l in j['priceLists'] as List? ?? const []) PriceList.fromJson((l as Map).cast())],
       taxRates = {for (final t in j['taxRates'] as List) (t as Map)['id'] as String: TaxRate.fromJson(t.cast())},
       categories = [for (final c in j['categories'] as List) Category.fromJson((c as Map).cast())],
       products = [for (final p in j['products'] as List) Product.fromJson((p as Map).cast())],
@@ -234,6 +313,9 @@ class Catalog {
   final Business business;
   final StoreInfo store;
   final List<Currency> currencies;
+
+  /// Retail first, then Wholesale and any others.
+  final List<PriceList> priceLists;
   final Map<String, TaxRate> taxRates;
   final List<Category> categories;
   final List<Product> products;
@@ -245,6 +327,12 @@ class Catalog {
     (c) => c.isBase,
     orElse: () => Currency(code: business.baseCurrency, name: business.baseCurrency, symbol: business.baseCurrency, rateToBase: '1', isBase: true),
   );
+
+  /// The list of normal prices (Retail), if the business has one.
+  PriceList? get defaultPriceList => priceLists.where((l) => l.isDefault).firstOrNull;
+
+  /// There are prices to choose between (Retail and Wholesale).
+  bool get hasPriceChoice => priceLists.any((l) => !l.isDefault);
 
   Currency currency(String code) => currencies.firstWhere((c) => c.code == code, orElse: () => baseCurrency);
 

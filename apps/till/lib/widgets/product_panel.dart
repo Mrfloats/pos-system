@@ -4,6 +4,7 @@ import '../core/money.dart';
 import '../models/catalog.dart';
 import '../screens/scanner_screen.dart';
 import '../theme.dart';
+import 'cart_panel.dart' show PriceListSwitch;
 import 'common.dart';
 import 'item_options.dart';
 
@@ -118,6 +119,8 @@ class _ProductPanelState extends State<ProductPanel> {
             onSubmitted: _submitted,
           ),
         ),
+        // On phones the basket is on its own page, so prices are switched here.
+        if (!isWide(context) && catalog.hasPriceChoice) const Padding(padding: EdgeInsets.fromLTRB(12, 4, 12, 0), child: PriceListSwitch()),
         if (topCategories.isNotEmpty)
           SizedBox(
             height: 48,
@@ -156,7 +159,13 @@ class _ProductPanelState extends State<ProductPanel> {
                   itemBuilder: (context, i) {
                     final p = products[i];
                     final category = catalog.categories.where((c) => c.id == p.categoryId).firstOrNull;
-                    return _ProductTile(product: p, currency: currency, color: parseColor(category?.color), onTap: () => _tap(p));
+                    return _ProductTile(
+                      product: p,
+                      currency: currency,
+                      priceListId: state.priceListId,
+                      color: parseColor(category?.color),
+                      onTap: () => _tap(p),
+                    );
                   },
                 ),
         ),
@@ -227,17 +236,20 @@ class _CategoryChip extends StatelessWidget {
 }
 
 class _ProductTile extends StatelessWidget {
-  const _ProductTile({required this.product, required this.currency, required this.onTap, this.color});
+  const _ProductTile({required this.product, required this.currency, required this.priceListId, required this.onTap, this.color});
 
   final Product product;
   final Currency currency;
+
+  /// Show prices from this list (Wholesale…).
+  final String? priceListId;
   final VoidCallback onTap;
   final Color? color;
 
   @override
   Widget build(BuildContext context) {
     final scheme = Theme.of(context).colorScheme;
-    final prices = product.variants.map((v) => currency.isBase ? v.price : fromBase(v.price, currency.rate)).toList()..sort();
+    final prices = product.variants.map((v) => v.priceFor(priceListId)).map((p) => currency.isBase ? p : fromBase(p, currency.rate)).toList()..sort();
     final price = prices.first == prices.last ? formatMoney(prices.first, currency.label) : 'from ${formatMoney(prices.first, currency.label)}';
     return Card(
       clipBehavior: Clip.antiAlias,

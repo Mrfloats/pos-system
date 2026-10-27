@@ -15,7 +15,7 @@ Point of sale and backoffice for **retail shops, wholesalers and restaurants**.
 - **Staff and roles.** Owner, admin, manager, cashier, waiter, stock clerk and accountant. Each person can have a 4–6 digit till PIN and be limited to certain stores. One login can belong to several businesses and switch between them.
 - **Catalog for all three business types:**
   - Retail: products, variants, barcodes, SKUs, categories, tax per product, sold-by-weight.
-  - Wholesale: packs (case of 24 with its own barcode and price), price lists with quantity breaks, customer credit limits.
+  - Wholesale: a wholesale price next to the retail price on each product and on each of its packs, packs (case of 24 with its own barcode and price), price lists with quantity breaks, customers and customer groups on wholesale prices, customer credit limits. Sales use the price list the cashier picks, or the customer's.
   - Restaurant: menu items, kitchen stations, choice groups (sides, extras), recipes that use up ingredient stock.
 - **Stock ledger.** Opening stock, goods received, adjustments, waste, transfers between stores and stock takes. Stock is never edited in place: every change is a new ledger row. The database refuses updates and deletes on the ledger, and retried requests are ignored using idempotency keys, ready for offline tills.
 - **Customers** with TIN and VAT number for ZIMRA fiscal tax invoices.
@@ -24,7 +24,7 @@ Point of sale and backoffice for **retail shops, wholesalers and restaurants**.
 - **Suppliers and purchases.** A purchase is a supplier bill for stock: it receives the goods into a store at their cost (and can update cost prices), records what is owed or pays it on the spot, and posts straight to Stock and VAT. Purchase bills can be imported from CSV; voiding a purchase takes its goods back out.
 - **Audit log** of who changed what.
 - **Backoffice screens:** sign in, sign up, overview, products (list, add, edit), categories, stock, customers, staff and settings (business, stores, tills, tax rates, currencies).
-- **Till app** ([apps/till](apps/till/README.md)) for Android countertop tills, phones and tablets, Windows PCs, and iPhones, iPads and Macs. An owner sets a till up once by signing in on it. Staff then sign in with their till PIN. It sells with barcode scanning, wholesale cases, restaurant sides and extras, customers and discounts, and any currency. Payments can be split across cash, card, mobile money and bank. It prints straight to Bluetooth, USB, network and Windows receipt printers (including Sunmi built-in printers), opens the cash drawer, and runs shifts with cash-up. Managers can do refunds. It keeps selling with no internet and uploads each sale exactly once when the connection is back.
+- **Till app** ([apps/till](apps/till/README.md)) for Android countertop tills, phones and tablets, Windows PCs, and iPhones, iPads and Macs. An owner sets a till up once by signing in on it. Staff then sign in with their till PIN. It sells with barcode scanning, retail and wholesale prices (switched by the cashier or set by the customer, with quantity breaks), wholesale cases, restaurant sides and extras, customers and discounts, and any currency. Payments can be split across cash, card, mobile money and bank. It prints straight to Bluetooth, USB, network and Windows receipt printers (including Sunmi built-in printers), opens the cash drawer, and runs shifts with cash-up. Managers can do refunds. It keeps selling with no internet and uploads each sale exactly once when the connection is back.
 
 ## Run it on your computer
 
@@ -92,7 +92,7 @@ New businesses don't open straight away. The sign-up page sends a **request** wi
 npm run test:api
 ```
 
-The 91 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices.
+The 96 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 

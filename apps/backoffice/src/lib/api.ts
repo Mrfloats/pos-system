@@ -222,6 +222,8 @@ export interface Packaging {
   quantity: string;
   barcode: string | null;
   price: string | null;
+  /** The pack's prices on price lists (Wholesale…). */
+  listPrices?: { priceListId: string; minQuantity: string; price: string }[];
 }
 
 export interface Variant {
@@ -235,6 +237,8 @@ export interface Variant {
   isDefault: boolean;
   active: boolean;
   packagings?: Packaging[];
+  /** Prices on price lists (Wholesale…), with quantity breaks. */
+  listPrices?: { priceListId: string; minQuantity: string; price: string }[];
 }
 
 export type ProductKind = "standard" | "service" | "menu_item" | "bundle";

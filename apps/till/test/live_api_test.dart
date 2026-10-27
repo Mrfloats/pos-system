@@ -125,6 +125,19 @@ void main() {
       expect(toCents(caseSale['total']), caseCart.total);
       expect((caseSale['lines'] as List).first, containsPair('packName', variant.packs.first.name));
 
+      // Wholesale prices: Floatly records the sale on the Wholesale list at the till's prices.
+      final wholesale = catalog.priceLists.firstWhere((l) => !l.isDefault);
+      final listed = catalog.products.firstWhere((p) => p.variants.first.listPrices.any((l) => l.priceListId == wholesale.id));
+      state.setPriceList(wholesale.id);
+      state.addItem(listed, listed.variants.first, quantity: 3000);
+      final wholesaleCart = state.priced;
+      expect(wholesaleCart.lines.single.unitPrice, lessThan(listed.variants.first.price));
+      final wholesaleReceipt = await state.completeSale([Payment(method: PayMethod.cash, currency: wholesaleCart.currency, amount: wholesaleCart.total)]);
+      final wholesaleSale = await owner.get('/sales/${wholesaleReceipt.saleId}') as Map;
+      expect(toCents(wholesaleSale['total']), wholesaleCart.total);
+      expect(wholesaleSale['priceListId'], wholesale.id);
+      expect(wholesaleReceipt.priceListName, wholesale.name);
+
       // Switched off in the backoffice while signed in: the till stops at its next call to Floatly.
       await owner.patch('/devices/${device['id']}', {'active': false});
       await expectLater(state.refreshCatalog(), throwsA(isA<ApiException>()));

@@ -173,6 +173,7 @@ Uint8List receiptEscPos(Receipt r, {required int paperWidth, bool openDrawer = f
   p.row('Cashier', r.cashier);
   if (r.customerName != null) p.row('Customer', r.customerName!);
   if (r.customerTin != null) p.row('Customer TIN', r.customerTin!);
+  if (r.priceListName != null) p.row('Prices', r.priceListName!);
   if (r.customerVat != null) p.row('Customer VAT No', r.customerVat!);
   p.rule();
   for (final l in r.lines) {

@@ -137,11 +137,21 @@ export class PackagingDto {
   @ToDecimalString() @IsQuantity() quantity: string;
   @IsOptional() @Trim() @IsString() @MaxLength(64) barcode?: string;
   @IsOptional() @ToDecimalString() @IsMoney() price?: string;
+  /** The pack's price on price lists (Wholesale…), from 1 pack. */
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => ListPriceDto)
+  listPrices?: ListPriceDto[];
 }
 
 export class ComponentDto {
   @IsUUID() componentVariantId: string;
   @ToDecimalString() @IsQuantity() quantity: string;
+}
+
+/** A variant's price on a price list (Wholesale…), from 1 unit. Quantity breaks are set on the price list itself. */
+export class ListPriceDto {
+  @IsUUID() priceListId: string;
+  /** Null takes the variant off the list (its quantity breaks stay). */
+  @IsOptional() @ToDecimalString() @IsMoney() price: string | null;
 }
 
 export class VariantDto {
@@ -158,6 +168,10 @@ export class VariantDto {
   /** Wholesale packs of this variant. Sent list replaces the existing packs. */
   @IsOptional() @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => PackagingDto)
   packagings?: PackagingDto[];
+
+  /** Prices on price lists (Wholesale…). Lists left out keep their prices. */
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => ListPriceDto)
+  listPrices?: ListPriceDto[];
 
   /** Recipe / bundle contents. Sent list replaces the existing components. */
   @IsOptional() @IsArray() @ArrayMaxSize(100) @ValidateNested({ each: true }) @Type(() => ComponentDto)

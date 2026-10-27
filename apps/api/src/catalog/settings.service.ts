@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { and, asc, eq, ne } from 'drizzle-orm';
+import { and, asc, eq, isNull, ne } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext } from '../common/auth-context.js';
 import { assertOwned } from '../common/ownership.js';
@@ -148,7 +148,7 @@ export class PriceListsService extends TenantCrud<typeof priceLists> {
         .from(priceListItems)
         .innerJoin(productVariants, eq(productVariants.id, priceListItems.variantId))
         .innerJoin(products, eq(products.id, productVariants.productId))
-        .where(eq(priceListItems.priceListId, priceListId))
+        .where(and(eq(priceListItems.priceListId, priceListId), isNull(priceListItems.packagingId)))
         .orderBy(asc(products.name), asc(productVariants.name), asc(priceListItems.minQuantity));
       return rows.map((r) => ({ ...r.item, productName: r.productName, variantName: r.variantName, sku: r.sku, basePrice: r.basePrice }));
     });
@@ -163,7 +163,7 @@ export class PriceListsService extends TenantCrud<typeof priceLists> {
       for (const variantId of variantIds) {
         await tx
           .delete(priceListItems)
-          .where(and(eq(priceListItems.priceListId, priceListId), eq(priceListItems.variantId, variantId)));
+          .where(and(eq(priceListItems.priceListId, priceListId), eq(priceListItems.variantId, variantId), isNull(priceListItems.packagingId)));
       }
       if (dto.items.length) {
         await tx.insert(priceListItems).values(
@@ -177,7 +177,10 @@ export class PriceListsService extends TenantCrud<typeof priceLists> {
         );
       }
       await this.audit.log(tx, ctx, 'set_prices', 'Price list', priceListId, { count: dto.items.length });
-      return tx.select().from(priceListItems).where(eq(priceListItems.priceListId, priceListId));
+      return tx
+        .select()
+        .from(priceListItems)
+        .where(and(eq(priceListItems.priceListId, priceListId), isNull(priceListItems.packagingId)));
     });
   }
 

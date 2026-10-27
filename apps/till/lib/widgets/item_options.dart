@@ -9,7 +9,9 @@ String _price(int baseCents, Currency c) => formatMoney(c.isBase ? baseCents : f
 
 /// Which variant, and whether singly or as a pack (a case of 24…).
 Future<Sellable?> chooseOption(BuildContext context, Product p) {
-  final currency = TillScope.read(context).saleCurrency;
+  final state = TillScope.read(context);
+  final currency = state.saleCurrency;
+  final list = state.priceListId;
   final scheme = Theme.of(context).colorScheme;
   return showModalBottomSheet<Sellable>(
     context: context,
@@ -29,7 +31,7 @@ Future<Sellable?> chooseOption(BuildContext context, Product p) {
               ListTile(
                 title: Text(v.name == 'Default' ? (v.packs.isEmpty ? p.name : 'Single') : v.name),
                 subtitle: v.sku == null ? null : Text(v.sku!),
-                trailing: Text(_price(v.price, currency), style: tabular.copyWith(fontWeight: FontWeight.w600)),
+                trailing: Text(_price(v.priceFor(list), currency), style: tabular.copyWith(fontWeight: FontWeight.w600)),
                 onTap: () => Navigator.pop(context, (product: p, variant: v, pack: null)),
               ),
               for (final pack in v.packs)
@@ -38,7 +40,7 @@ Future<Sellable?> chooseOption(BuildContext context, Product p) {
                   leading: Icon(Icons.inventory_2_outlined, color: scheme.primary),
                   title: Text(pack.name),
                   subtitle: Text('${formatQty(pack.units)} × ${v.name == 'Default' ? p.name : v.name}'),
-                  trailing: Text(_price(pack.price, currency), style: tabular.copyWith(fontWeight: FontWeight.w600)),
+                  trailing: Text(_price(v.packPrice(pack, list), currency), style: tabular.copyWith(fontWeight: FontWeight.w600)),
                   onTap: () => Navigator.pop(context, (product: p, variant: v, pack: pack)),
                 ),
             ],
@@ -70,7 +72,7 @@ Future<List<Choice>?> askChoices(BuildContext context, Product p, Variant v, Cur
       builder: (context, setSheet) {
         final ready = p.choiceGroups.every((g) => picked[g.id]!.length >= g.minSelect);
         final extra = picked.values.expand((l) => l).fold(0, (a, c) => a + c.priceDelta);
-        final each = v.price + extra;
+        final each = v.priceFor(TillScope.read(context).priceListId) + extra;
         return SafeArea(
           child: ConstrainedBox(
             constraints: BoxConstraints(maxHeight: MediaQuery.sizeOf(context).height * 0.85),

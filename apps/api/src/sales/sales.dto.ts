@@ -56,6 +56,8 @@ export class SalePaymentDto {
 export class CreateSaleDto {
   @IsUUID() storeId: string;
   @IsOptional() @IsUUID() customerId?: string;
+  /** Price the sale from this price list (Wholesale…). Leave out for the customer's list, or normal prices. */
+  @IsOptional() @IsUUID() priceListId?: string;
   /** Printed on the receipt when no customer record is chosen. */
   @IsOptional() @Trim() @IsString() @MaxLength(160) customerName?: string;
   @IsOptional() @Currency() currencyCode?: string;
@@ -80,6 +82,7 @@ export class CreateSaleDto {
 export class PreviewSaleDto {
   @IsUUID() storeId: string;
   @IsOptional() @IsUUID() customerId?: string;
+  @IsOptional() @IsUUID() priceListId?: string;
   @IsOptional() @Currency() currencyCode?: string;
   @IsOptional() @IsRate() rate?: string;
   @IsArray() @ArrayMaxSize(300) @ValidateNested({ each: true }) @Type(() => SaleLineDto)

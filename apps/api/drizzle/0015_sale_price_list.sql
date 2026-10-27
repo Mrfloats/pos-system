@@ -1,0 +1,2 @@
+ALTER TABLE "sales" ADD COLUMN "price_list_id" uuid;--> statement-breakpoint
+ALTER TABLE "sales" ADD CONSTRAINT "sales_price_list_id_price_lists_id_fk" FOREIGN KEY ("price_list_id") REFERENCES "public"."price_lists"("id") ON DELETE set null ON UPDATE no action;

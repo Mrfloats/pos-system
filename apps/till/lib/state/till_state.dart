@@ -196,6 +196,9 @@ class TillState extends ChangeNotifier {
 
   /// Printed on the receipt when no customer record is chosen.
   String? customerName;
+
+  /// The price list the sale is priced from (Wholesale…). Null: normal (retail) prices.
+  String? priceListId;
   String? _saleCurrency;
 
   List<_KnownPin> _knownPins = [];
@@ -510,7 +513,7 @@ class TillState extends ChangeNotifier {
 
   Currency get saleCurrency => _saleCurrency == null ? catalog!.baseCurrency : catalog!.currency(_saleCurrency!);
 
-  PricedCart get priced => priceCart(lines: cart, currency: saleCurrency, taxRates: catalog!.taxRates, customer: customer);
+  PricedCart get priced => priceCart(lines: cart, currency: saleCurrency, taxRates: catalog!.taxRates, customer: customer, priceListId: priceListId);
 
   void addItem(Product product, Variant variant, {int quantity = 1000, Pack? pack, List<Choice> choices = const []}) {
     final partQuantities = pack == null && product.partQuantities;
@@ -554,6 +557,7 @@ class TillState extends ChangeNotifier {
     cart.clear();
     customer = null;
     customerName = null;
+    priceListId = null;
     _saleCurrency = null;
     notifyListeners();
   }
@@ -561,8 +565,19 @@ class TillState extends ChangeNotifier {
   void setCustomer(Customer? c, {String? name}) {
     customer = c;
     customerName = c == null ? name : null;
+    // A wholesale customer gets wholesale prices; the cashier can still switch back.
+    if (c?.priceListId != null && catalog!.priceLists.any((l) => l.id == c!.priceListId)) priceListId = c!.priceListId;
     notifyListeners();
   }
+
+  /// Prices the sale from this list (Wholesale…); the default list or null is the normal (retail) prices.
+  void setPriceList(String? id) {
+    priceListId = id;
+    notifyListeners();
+  }
+
+  /// The prices in use, for showing: Retail, Wholesale…
+  PriceList? get priceList => catalog?.priceLists.where((l) => l.id == priceListId).firstOrNull ?? catalog?.defaultPriceList;
 
   /// Prices typed in were in the old currency, so they are cleared.
   void setSaleCurrency(Currency c) {
@@ -617,6 +632,7 @@ class TillState extends ChangeNotifier {
       'currencyCode': cart.currency.code,
       if (!cart.currency.isBase) 'rate': cart.rate,
       'customerId': ?customer?.id,
+      'priceListId': ?priceListId,
       if (customer == null && (customerName ?? '').isNotEmpty) 'customerName': customerName,
       'note': 'Till receipt $reference',
       // Prices and discounts go as the customer was charged, so Floatly records exactly that.
@@ -655,6 +671,7 @@ class TillState extends ChangeNotifier {
       settlement: settlement,
       customer: customer,
       customerName: customerName,
+      priceListName: priceListId == null || priceList?.isDefault == true ? null : priceList?.name,
     );
     outbox.add(PendingSale(clientId: clientId, payload: payload));
     receipts.insert(0, receipt);

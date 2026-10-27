@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { and, asc, count, eq, exists, ilike, inArray, or, sql, SQL } from 'drizzle-orm';
+import { and, asc, count, eq, exists, ilike, inArray, isNull, or, sql, SQL } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext } from '../common/auth-context.js';
 import { assertOwned } from '../common/ownership.js';
@@ -8,6 +8,8 @@ import { DbService, Tx } from '../db/db.service.js';
 import {
   categories,
   modifierGroups,
+  priceListItems,
+  priceLists,
   productComponents,
   productModifierGroups,
   productPackagings,
@@ -72,6 +74,10 @@ export class ProductsService {
             .where(inArray(productVariants.productId, rows.map((r) => r.id)))
             .orderBy(asc(productVariants.createdAt))
         : [];
+      const listPrices = await this.listPricesFor(
+        tx,
+        variants.map((v) => v.id),
+      );
       // Stock across all stores, and which stores hold any, for the stock management list.
       const stock = new Map<string, { onHand: string; stores: string[] }>();
       if (q.withStock && rows.length) {
@@ -93,7 +99,9 @@ export class ProductsService {
       return {
         items: rows.map((p) => ({
           ...p,
-          variants: variants.filter((v) => v.productId === p.id),
+          variants: variants
+            .filter((v) => v.productId === p.id)
+            .map((v) => ({ ...v, listPrices: listPrices.filter((l) => l.variantId === v.id && l.packagingId === null).map(({ variantId, packagingId, ...l }) => l) })),
           ...(q.withStock ? (stock.get(p.id) ?? { onHand: '0.000', stores: [] }) : {}),
         })),
         total,
@@ -246,6 +254,7 @@ export class ProductsService {
           .innerJoin(products, eq(products.id, productVariants.productId))
           .where(inArray(productComponents.parentVariantId, variantIds))
       : [];
+    const listPrices = await this.listPricesFor(tx, variantIds);
     const groups = await tx
       .select({ id: modifierGroups.id, name: modifierGroups.name })
       .from(productModifierGroups)
@@ -260,11 +269,30 @@ export class ProductsService {
       unit: row.unit?.id ? row.unit : null,
       variants: variants.map((v) => ({
         ...v,
-        packagings: packs.filter((p) => p.variantId === v.id),
+        packagings: packs
+          .filter((p) => p.variantId === v.id)
+          .map((p) => ({ ...p, listPrices: listPrices.filter((l) => l.packagingId === p.id).map(({ variantId, packagingId, ...l }) => l) })),
         components: components.filter((c) => c.parentVariantId === v.id),
+        listPrices: listPrices.filter((l) => l.variantId === v.id && l.packagingId === null).map(({ variantId, packagingId, ...l }) => l),
       })),
       modifierGroups: groups,
     };
+  }
+
+  /** Prices on price lists (Wholesale…) for these variants, with each list's quantity breaks, lowest first. */
+  private listPricesFor(tx: Tx, variantIds: string[]) {
+    if (!variantIds.length) return Promise.resolve([]);
+    return tx
+      .select({
+        variantId: priceListItems.variantId,
+        packagingId: priceListItems.packagingId,
+        priceListId: priceListItems.priceListId,
+        minQuantity: priceListItems.minQuantity,
+        price: priceListItems.price,
+      })
+      .from(priceListItems)
+      .where(inArray(priceListItems.variantId, variantIds))
+      .orderBy(asc(priceListItems.minQuantity));
   }
 
   private async checkReferences(tx: Tx, dto: UpdateProductDto) {
@@ -272,6 +300,12 @@ export class ProductsService {
     await assertOwned(tx, taxRates, [dto.taxRateId], 'tax rate');
     await assertOwned(tx, units, [dto.unitId], 'unit');
     await assertOwned(tx, modifierGroups, dto.modifierGroupIds ?? [], 'modifier group');
+    await assertOwned(
+      tx,
+      priceLists,
+      (dto.variants ?? []).flatMap((v) => [...(v.listPrices ?? []), ...(v.packagings ?? []).flatMap((p) => p.listPrices ?? [])].map((l) => l.priceListId)),
+      'price list',
+    );
     const componentIds = (dto.variants ?? []).flatMap((v) => (v.components ?? []).map((c) => c.componentVariantId));
     await assertOwned(tx, productVariants, componentIds, 'component variant');
 
@@ -330,16 +364,42 @@ export class ProductsService {
       if (v.packagings) {
         await tx.delete(productPackagings).where(eq(productPackagings.variantId, variantId));
         if (v.packagings.length) {
-          await tx.insert(productPackagings).values(
-            v.packagings.map((p) => ({
-              tenantId: ctx.tenantId,
-              variantId,
-              name: p.name,
-              quantity: p.quantity,
-              barcode: p.barcode ?? null,
-              price: p.price ?? null,
-            })),
+          const saved = await tx
+            .insert(productPackagings)
+            .values(
+              v.packagings.map((p) => ({
+                tenantId: ctx.tenantId,
+                variantId,
+                name: p.name,
+                quantity: p.quantity,
+                barcode: p.barcode ?? null,
+                price: p.price ?? null,
+              })),
+            )
+            .returning({ id: productPackagings.id });
+          // Each pack's price on price lists (Wholesale…), from 1 pack.
+          const packPrices = v.packagings.flatMap((p, i) =>
+            (p.listPrices ?? [])
+              .filter((lp) => lp.price !== null && lp.price !== undefined)
+              .map((lp) => ({ tenantId: ctx.tenantId, priceListId: lp.priceListId, variantId, packagingId: saved[i].id, minQuantity: '1', price: lp.price! })),
           );
+          if (packPrices.length) await tx.insert(priceListItems).values(packPrices);
+        }
+      }
+      // The price from 1 unit on each list sent; quantity breaks set on the price list stay.
+      for (const lp of v.listPrices ?? []) {
+        await tx
+          .delete(priceListItems)
+          .where(
+            and(
+              eq(priceListItems.priceListId, lp.priceListId),
+              eq(priceListItems.variantId, variantId),
+              isNull(priceListItems.packagingId),
+              eq(priceListItems.minQuantity, '1'),
+            ),
+          );
+        if (lp.price !== null && lp.price !== undefined) {
+          await tx.insert(priceListItems).values({ tenantId: ctx.tenantId, priceListId: lp.priceListId, variantId, minQuantity: '1', price: lp.price });
         }
       }
       if (v.components) {

@@ -1533,3 +1533,138 @@ describe('packs and choices', () => {
     ]);
   });
 });
+
+describe('wholesale and retail prices', () => {
+  let t: Record<string, string>;
+  let storeId: string;
+  let retailId: string;
+  let wholesaleId: string;
+  let sugar: string;
+  let boxId: string;
+  const S = '/api/v1/sales';
+  const sell = (body: object) => http.post(S).set(t).send({ storeId, payments: [{ method: 'cash', amount: '1000' }], ...body });
+
+  beforeAll(async () => {
+    t = auth((await signup('Price Shop', 'priceshop@example.com', 'mixed')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(t)).body[0].id;
+    const lists = (await http.get('/api/v1/price-lists').set(t).expect(200)).body;
+    retailId = lists.find((l: any) => l.name === 'Retail').id;
+    wholesaleId = lists.find((l: any) => l.name === 'Wholesale').id;
+    const p = await http
+      .post('/api/v1/products')
+      .set(t)
+      .send({
+        name: 'Sugar 2kg',
+        variants: [
+          {
+            barcode: '800200',
+            price: '1.20',
+            costPrice: '0.70',
+            listPrices: [{ priceListId: wholesaleId, price: '1.00' }],
+            packagings: [{ name: 'Bale of 10', quantity: 10, barcode: 'BALE10' }],
+          },
+        ],
+      })
+      .expect(201);
+    sugar = p.body.variants[0].id;
+    boxId = p.body.variants[0].packagings[0].id;
+    expect(p.body.variants[0].listPrices).toEqual([{ priceListId: wholesaleId, minQuantity: '1.000', price: '1.00' }]);
+    await http.post('/api/v1/inventory/movements').set(t).send({ storeId, type: 'receive', lines: [{ variantId: sugar, quantity: 500 }] }).expect(201);
+  });
+
+  it('keeps quantity breaks when the product form changes the wholesale price', async () => {
+    await http
+      .put(`/api/v1/price-lists/${wholesaleId}/items`)
+      .set(t)
+      .send({ items: [{ variantId: sugar, price: '1.00' }, { variantId: sugar, minQuantity: 50, price: '0.90' }] })
+      .expect(200);
+    const product = (await http.get('/api/v1/products').query({ search: 'Sugar' }).set(t)).body.items[0];
+    await http
+      .patch(`/api/v1/products/${product.id}`)
+      .set(t)
+      .send({ variants: [{ id: sugar, price: '1.20', listPrices: [{ priceListId: wholesaleId, price: '0.95' }] }] })
+      .expect(200);
+    const again = await http.get(`/api/v1/products/${product.id}`).set(t).expect(200);
+    expect(again.body.variants[0].listPrices.map((l: any) => [l.minQuantity, l.price])).toEqual([
+      ['1.000', '0.95'],
+      ['50.000', '0.90'],
+    ]);
+  });
+
+  it('sells at the retail price unless the sale is priced wholesale', async () => {
+    expect((await sell({ lines: [{ variantId: sugar, quantity: 2 }] }).expect(201)).body).toMatchObject({ total: '2.40', priceListId: null });
+    const wholesale = await sell({ priceListId: wholesaleId, lines: [{ variantId: sugar, quantity: 2 }] }).expect(201);
+    expect(wholesale.body).toMatchObject({ total: '1.90', priceListId: wholesaleId });
+    // From 50 the cheaper break applies.
+    expect((await sell({ priceListId: wholesaleId, lines: [{ variantId: sugar, quantity: 60 }] }).expect(201)).body.total).toBe('54.00');
+    // A bale without its own price is ten of the wholesale unit price.
+    expect((await sell({ priceListId: wholesaleId, lines: [{ variantId: sugar, packagingId: boxId, quantity: 1 }] }).expect(201)).body.total).toBe('9.50');
+    const preview = await http.post(`${S}/preview`).set(t).send({ storeId, priceListId: wholesaleId, lines: [{ variantId: sugar, quantity: 1 }] }).expect(200);
+    expect(preview.body).toMatchObject({ priceListId: wholesaleId, total: '0.95' });
+  });
+
+  it("uses a wholesale customer's prices without being asked, unless the sale says otherwise", async () => {
+    const trader = await http.post('/api/v1/customers').set(t).send({ name: 'Moyo Traders', priceListId: wholesaleId }).expect(201);
+    expect((await sell({ customerId: trader.body.id, lines: [{ variantId: sugar, quantity: 2 }] }).expect(201)).body).toMatchObject({ total: '1.90', priceListId: wholesaleId });
+    // Asked for retail (a list with no price for it): the normal price.
+    expect((await sell({ customerId: trader.body.id, priceListId: retailId, lines: [{ variantId: sugar, quantity: 2 }] }).expect(201)).body.total).toBe('2.40');
+
+    const group = await http.post('/api/v1/customer-groups').set(t).send({ name: 'Tuckshops', priceListId: wholesaleId }).expect(201);
+    const shop = await http.post('/api/v1/customers').set(t).send({ name: 'Mai Rudo Tuckshop', groupId: group.body.id }).expect(201);
+    expect((await sell({ customerId: shop.body.id, lines: [{ variantId: sugar, quantity: 2 }] }).expect(201)).body.total).toBe('1.90');
+
+    const catalog = await http.get('/api/v1/till/catalog').query({ storeId }).set(t).expect(200);
+    expect(catalog.body.priceLists.map((l: any) => [l.name, l.isDefault])).toEqual([
+      ['Retail', true],
+      ['Wholesale', false],
+    ]);
+    const v = catalog.body.products.find((p: any) => p.name === 'Sugar 2kg').variants[0];
+    expect(v.listPrices.map((l: any) => [l.minQuantity, l.price])).toEqual([
+      ['1.000', '0.95'],
+      ['50.000', '0.90'],
+    ]);
+    expect(v.packagings[0]).toMatchObject({ ownPrice: false, price: '12.00' });
+    expect(catalog.body.customers.find((c: any) => c.name === 'Mai Rudo Tuckshop').priceListId).toBe(wholesaleId);
+  });
+
+  it('gives a bale its own retail and wholesale price', async () => {
+    const product = (await http.get('/api/v1/products').query({ search: 'Sugar' }).set(t)).body.items[0];
+    const saved = await http
+      .patch(`/api/v1/products/${product.id}`)
+      .set(t)
+      .send({
+        variants: [
+          {
+            id: sugar,
+            price: '1.20',
+            packagings: [{ name: 'Bale of 10', quantity: 10, barcode: 'BALE10', price: '11.50', listPrices: [{ priceListId: wholesaleId, price: '9.00' }] }],
+          },
+        ],
+      })
+      .expect(200);
+    const bale = saved.body.variants[0].packagings[0];
+    expect(bale.listPrices).toEqual([{ priceListId: wholesaleId, minQuantity: '1.000', price: '9.00' }]);
+    // The single item keeps its own wholesale prices.
+    expect(saved.body.variants[0].listPrices.map((l: any) => l.price)).toEqual(['0.95', '0.90']);
+
+    const retail = await sell({ lines: [{ variantId: sugar, packagingId: bale.id, quantity: 2 }] }).expect(201);
+    expect(retail.body.total).toBe('23.00');
+    const wholesale = await sell({ priceListId: wholesaleId, lines: [{ variantId: sugar, packagingId: bale.id, quantity: 2 }] }).expect(201);
+    expect(wholesale.body.total).toBe('18.00');
+
+    const catalog = await http.get('/api/v1/till/catalog').query({ storeId }).set(t).expect(200);
+    const pack = catalog.body.products.find((p: any) => p.name === 'Sugar 2kg').variants[0].packagings[0];
+    expect(pack).toMatchObject({ price: '11.50', ownPrice: true, listPrices: [{ priceListId: wholesaleId, minQuantity: '1.000', price: '9.00' }] });
+    // The price list page lists single items only, and editing it leaves the bale's price alone.
+    const items = await http.get(`/api/v1/price-lists/${wholesaleId}/items`).set(t).expect(200);
+    expect(items.body.every((i: any) => i.packagingId === null)).toBe(true);
+    await http.put(`/api/v1/price-lists/${wholesaleId}/items`).set(t).send({ items: [{ variantId: sugar, price: '0.95' }] }).expect(200);
+    expect((await sell({ priceListId: wholesaleId, lines: [{ variantId: sugar, packagingId: bale.id, quantity: 1 }] }).expect(201)).body.total).toBe('9.00');
+  });
+
+  it('refuses a switched-off price list', async () => {
+    await http.patch(`/api/v1/price-lists/${wholesaleId}`).set(t).send({ active: false }).expect(200);
+    await sell({ priceListId: wholesaleId, lines: [{ variantId: sugar, quantity: 1 }] }).expect(400);
+    await http.patch(`/api/v1/price-lists/${wholesaleId}`).set(t).send({ active: true }).expect(200);
+  });
+});

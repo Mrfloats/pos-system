@@ -82,6 +82,7 @@ class Receipt {
     this.customerName,
     this.customerTin,
     this.customerVat,
+    this.priceListName,
     this.number,
     this.saleId,
     this.discarded = false,
@@ -98,6 +99,7 @@ class Receipt {
     required Settlement settlement,
     Customer? customer,
     String? customerName,
+    String? priceListName,
   }) {
     final b = catalog.business;
     final s = catalog.store;
@@ -117,6 +119,7 @@ class Receipt {
       customerName: customer?.name ?? customerName,
       customerTin: customer?.tin,
       customerVat: customer?.vatNumber,
+      priceListName: priceListName,
       currencyCode: cart.currency.code,
       symbol: cart.currency.label,
       lines: [
@@ -163,6 +166,7 @@ class Receipt {
       customerName = j['customerName'] as String?,
       customerTin = j['customerTin'] as String?,
       customerVat = j['customerVat'] as String?,
+      priceListName = j['priceListName'] as String?,
       currencyCode = j['currencyCode'] as String,
       symbol = j['symbol'] as String,
       lines = [for (final l in j['lines'] as List) ReceiptLine.fromJson((l as Map).cast())],
@@ -184,6 +188,9 @@ class Receipt {
   final DateTime soldAt;
   final String businessName, storeName, cashier, currencyCode, symbol;
   final String? address, phone, tin, vatNumber, customerName, customerTin, customerVat;
+
+  /// Priced from this list (Wholesale…); null for normal prices.
+  final String? priceListName;
   final List<ReceiptLine> lines;
   final int subtotal, discountTotal, taxTotal, total;
   final bool taxIncluded;
@@ -214,6 +221,7 @@ class Receipt {
     'customerName': customerName,
     'customerTin': customerTin,
     'customerVat': customerVat,
+    'priceListName': priceListName,
     'currencyCode': currencyCode,
     'symbol': symbol,
     'lines': [for (final l in lines) l.toJson()],

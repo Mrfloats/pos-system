@@ -172,4 +172,45 @@ void main() {
     expect(find.text('Salad, Cheese'), findsOneWidget, reason: 'on the receipt');
     state.dispose();
   });
+
+  testWidgets('switches the sale to wholesale prices, by hand or for a wholesale customer', (tester) async {
+    tester.view.physicalSize = const Size(1400, 900);
+    tester.view.devicePixelRatio = 1;
+    addTearDown(tester.view.reset);
+
+    final state = await offlineTill();
+    await tester.pumpWidget(TillApp(state: state));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField).first, '600500');
+    await tester.testTextInput.receiveAction(TextInputAction.search);
+    await tester.pumpAndSettle();
+    expect(find.text(r'Charge $0.50'), findsOneWidget);
+
+    await tester.tap(find.text('Wholesale prices'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'Charge $0.40'), findsOneWidget);
+    await tester.tap(find.text('Retail prices'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'Charge $0.50'), findsOneWidget);
+
+    // A wholesale customer brings wholesale prices with them.
+    state.setCustomer(state.catalog!.customers.firstWhere((c) => c.name == 'Moyo Traders'));
+    await tester.pumpAndSettle();
+    expect(find.text(r'Charge $0.40'), findsOneWidget);
+
+    await tester.tap(find.text(r'Charge $0.40'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.textContaining('Exact'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('Complete sale'));
+    await tester.pumpAndSettle();
+    final sale = state.outbox.single.payload;
+    expect(sale['priceListId'], 'pl-wholesale');
+    expect((sale['lines'] as List).single['unitPrice'], '0.40');
+    expect(find.text('Wholesale'), findsOneWidget, reason: 'printed as "Prices: Wholesale" on the receipt');
+    // The next sale starts on normal prices again.
+    expect(state.priceListId, isNull);
+    state.dispose();
+  });
 }

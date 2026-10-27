@@ -73,6 +73,7 @@ Future<Uint8List> receiptPdf(Receipt r, {required int paperWidth}) async {
           row('Cashier', r.cashier),
           if (r.customerName != null) row('Customer', r.customerName!),
           if (r.customerTin != null) row('Customer TIN', r.customerTin!),
+          if (r.priceListName != null) row('Prices', r.priceListName!),
           if (r.customerVat != null) row('Customer VAT No', r.customerVat!),
           rule(),
           for (final l in r.lines) ...[

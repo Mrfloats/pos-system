@@ -15,6 +15,8 @@ import {
   memberships,
   modifierGroups,
   modifiers,
+  priceListItems,
+  priceLists,
   productComponents,
   productModifierGroups,
   productPackagings,
@@ -139,7 +141,7 @@ export class SalesService {
    */
   private async priceLines(
     tx: Tx,
-    input: { storeId: string; customerId?: string | null; lines: CreateSaleDto['lines'] },
+    input: { storeId: string; customerId?: string | null; priceListId?: string | null; lines: CreateSaleDto['lines'] },
     currency: { rate: string; isBase: boolean },
   ) {
     const ids = [...new Set(input.lines.map((l) => l.variantId))];
@@ -175,16 +177,35 @@ export class SalesService {
     const rateIds = [...new Set(variants.map((v) => v.taxRateId).filter((v): v is string => !!v))];
     const rates = new Map(rateIds.length ? (await tx.select().from(taxRates).where(inArray(taxRates.id, rateIds))).map((r) => [r.id, r]) : []);
 
+    // The customer's group discount, and which price list prices the sale: the one
+    // chosen, else the customer's own, else their group's. Without one: normal (retail) prices.
     let groupPct = 0n;
+    let listId = input.priceListId ?? null;
     if (input.customerId) {
-      const [g] = await tx
-        .select({ pct: customerGroups.discountPercent })
+      const [c] = await tx
+        .select({ pct: customerGroups.discountPercent, listId: customers.priceListId, groupListId: customerGroups.priceListId })
         .from(customers)
-        .innerJoin(customerGroups, eq(customerGroups.id, customers.groupId))
+        .leftJoin(customerGroups, eq(customerGroups.id, customers.groupId))
         .where(eq(customers.id, input.customerId))
         .limit(1);
-      if (g) groupPct = toCents(g.pct);
+      if (c?.pct) groupPct = toCents(c.pct);
+      listId ??= c?.listId ?? c?.groupListId ?? null;
     }
+    const list = listId ? (await tx.select().from(priceLists).where(eq(priceLists.id, listId)).limit(1))[0] : undefined;
+    if (listId && !list) throw new BadRequestException('Unknown price list');
+    if (input.priceListId && !list!.active) throw new BadRequestException(`The ${list!.name} price list is switched off`);
+    const priceList = list?.active ? list : undefined;
+    // Each item's prices on the list, biggest quantity break first, converted to the base currency.
+    const listCurrency = priceList ? await this.ledger.resolveCurrency(tx, priceList.currencyCode, undefined) : undefined;
+    const listPrices = priceList
+      ? (
+          await tx
+            .select({ variantId: priceListItems.variantId, packagingId: priceListItems.packagingId, minQuantity: priceListItems.minQuantity, price: priceListItems.price })
+            .from(priceListItems)
+            .where(and(eq(priceListItems.priceListId, priceList.id), inArray(priceListItems.variantId, ids)))
+            .orderBy(desc(priceListItems.minQuantity))
+        ).map((r) => ({ ...r, min: parseFixed(r.minQuantity, 3), base: listCurrency!.isBase ? toCents(r.price) : toBase(toCents(r.price), listCurrency!.rate) }))
+      : [];
 
     const recipe = await tx
       .select({
@@ -242,12 +263,17 @@ export class SalesService {
       const perPack = pack ? parseFixed(pack.quantity, 3) : 1000n;
       const units = divRound(q * perPack, 1000n);
 
-      // A pack has its own price, else it is the item's price times the units in it.
-      const shelf = toCents(overrides.get(v.id) ?? v.price);
+      // The price list's price for this many units (its quantity breaks), else this store's price.
+      // A pack: its price on the list for this many packs, else its own price, else the item's price times the units in it.
+      const listed = listPrices.find((p) => p.variantId === v.id && p.packagingId === null && p.min <= units);
+      const shelf = listed ? listed.base : toCents(overrides.get(v.id) ?? v.price);
+      const packListed = pack ? listPrices.find((p) => p.packagingId === pack.id && p.min <= q) : undefined;
       const baseUnit = pack
-        ? pack.price !== null
-          ? toCents(pack.price)
-          : divRound(shelf * perPack, 1000n)
+        ? packListed
+          ? packListed.base
+          : pack.price !== null
+            ? toCents(pack.price)
+            : divRound(shelf * perPack, 1000n)
         : shelf + sum(picks.map((p) => toCents(p.modifier.priceDelta)));
       if (baseUnit < 0n) throw new BadRequestException(`The choices on "${v.productName}" take its price below zero`);
       const unitPrice = l.unitPrice !== undefined ? toCents(l.unitPrice) : currency.isBase ? baseUnit : fromBase(baseUnit, currency.rate);
@@ -320,7 +346,7 @@ export class SalesService {
         note: l.note ?? null,
       };
     });
-    return { lines, movements };
+    return { lines, movements, priceListId: priceList?.id ?? null };
   }
 
   /**
@@ -362,10 +388,11 @@ export class SalesService {
       await assertOwned(tx, stores, [dto.storeId], 'store');
       await assertOwned(tx, customers, [dto.customerId], 'customer');
       const { currencyCode, rate, isBase } = await this.ledger.resolveCurrency(tx, dto.currencyCode, dto.rate);
-      const { lines } = dto.lines.length ? await this.priceLines(tx, dto, { rate, isBase }) : { lines: [] };
+      const { lines, priceListId } = dto.lines.length ? await this.priceLines(tx, dto, { rate, isBase }) : { lines: [], priceListId: dto.priceListId ?? null };
       return {
         currencyCode,
         rate,
+        priceListId,
         lines: lines.map((l) => ({
           variantId: l.variantId,
           unitPrice: fromCents(l.unitPrice),
@@ -429,7 +456,7 @@ export class SalesService {
     await this.ledger.assertOpenPeriod(tx, day);
 
     const { currencyCode, rate, isBase } = await this.ledger.resolveCurrency(tx, dto.currencyCode, dto.rate);
-    const { lines, movements } = await this.priceLines(tx, dto, { rate, isBase });
+    const { lines, movements, priceListId } = await this.priceLines(tx, dto, { rate, isBase });
     const total = sum(lines.map((l) => l.total));
     const totalBase = sum(lines.map((l) => l.netBase + l.taxBase));
     const costBase = sum(lines.map((l) => l.costBase));
@@ -455,6 +482,7 @@ export class SalesService {
         appVersion: dto.appVersion ?? null,
         customerId: dto.customerId ?? null,
         customerName,
+        priceListId,
         salespersonId: dto.salespersonId ?? ctx.userId,
         originalSaleId: opts.fromQuotationId ?? null,
         soldAt,
@@ -583,7 +611,7 @@ export class SalesService {
       await assertOwned(tx, stores, [dto.storeId], 'store');
       await assertOwned(tx, customers, [dto.customerId], 'customer');
       const { currencyCode, rate, isBase } = await this.ledger.resolveCurrency(tx, dto.currencyCode, dto.rate);
-      const { lines } = await this.priceLines(tx, dto, { rate, isBase });
+      const { lines, priceListId } = await this.priceLines(tx, dto, { rate, isBase });
       const number = await this.ledger.nextNumber(tx, ctx.tenantId, PREFIX.quotation[0], PREFIX.quotation[1]);
       const [q] = await tx
         .insert(sales)
@@ -595,6 +623,7 @@ export class SalesService {
           storeId: dto.storeId,
           customerId: dto.customerId ?? null,
           customerName: await this.customerName(tx, dto.customerId, dto.customerName),
+          priceListId,
           salespersonId: dto.salespersonId ?? ctx.userId,
           currencyCode,
           rate,
@@ -631,6 +660,7 @@ export class SalesService {
           customerName: q.customerName,
           currencyCode: q.currencyCode,
           rate: q.rate,
+          priceListId: q.priceListId ?? undefined,
           lines: lines.map((l) => ({
             variantId: l.variantId,
             packagingId: l.packagingId ?? undefined,
