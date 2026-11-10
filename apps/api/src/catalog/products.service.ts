@@ -20,7 +20,7 @@ import {
   taxRates,
   units,
 } from '../db/schema.js';
-import { CreateProductDto, ProductQuery, UpdateProductDto, VariantDto } from './catalog.dto.js';
+import { CreateProductDto, ProductQuery, UpdateProductDto, UpdateVariantDto, VariantDto } from './catalog.dto.js';
 
 type Product = typeof products.$inferSelect;
 type Variant = typeof productVariants.$inferSelect;
@@ -226,6 +226,36 @@ export class ProductsService {
       }
     });
     return this.get(ctx, id);
+  }
+
+  /**
+   * One item's selling price, cost or reorder level. A new selling price needs
+   * the products.price permission (and, from a phone, the person's PIN), and is
+   * kept in the audit trail with what it was before.
+   */
+  async updateVariant(ctx: AuthContext, id: string, dto: UpdateVariantDto) {
+    return this.dbs.withTenant(ctx, async (tx) => {
+      const [v] = await tx.select().from(productVariants).where(eq(productVariants.id, id));
+      found(v, 'Item');
+      const changes: Partial<typeof productVariants.$inferInsert> = {};
+      const priceChanged = dto.price !== undefined && Number(dto.price) !== Number(v.price);
+      if (priceChanged) {
+        assertCan(ctx, 'products.price');
+        assertPinConfirmed(ctx);
+        changes.price = dto.price;
+      }
+      if (dto.costPrice !== undefined) changes.costPrice = dto.costPrice;
+      if (dto.reorderLevel !== undefined) changes.reorderLevel = dto.reorderLevel;
+      if (Object.keys(changes).length) {
+        await tx.update(productVariants).set(changes).where(eq(productVariants.id, id));
+        const old = Object.fromEntries(Object.keys(changes).map((k) => [k, v[k as keyof typeof v]]));
+        await this.audit.log(tx, ctx, 'update', 'Product', v.productId, { variantId: id, ...changes }, { old, new: changes });
+        if (priceChanged) {
+          await this.audit.log(tx, ctx, 'price_change', 'Product', v.productId, { variants: [v.name] }, { old: { [id]: v.price }, new: { [id]: dto.price } });
+        }
+      }
+      return this.full(tx, v.productId);
+    });
   }
 
   /** Products are archived, not deleted, so past sales and stock history stay intact. */

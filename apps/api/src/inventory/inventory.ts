@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, Injectable, Module, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, Injectable, Module, Param, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { Transform, Type } from 'class-transformer';
 import {
@@ -21,6 +21,7 @@ import { type AuthContext, Ctx, Roles, STOCK_WRITERS } from '../common/auth-cont
 import { assertCan, Can } from '../common/permissions.js';
 import { assertOwned } from '../common/ownership.js';
 import {
+  found,
   IsMoney,
   IsQuantity,
   IsSignedQuantity,
@@ -30,7 +31,8 @@ import {
   Trim,
 } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
-import { products, productVariants, stockMovements, stores } from '../db/schema.js';
+import { categories, products, productVariants, stockMovements, stores, users } from '../db/schema.js';
+import { IdParam } from '../organization/organization.dto.js';
 import { StockReportsController, StockReportsService } from './stock-reports.js';
 
 // ----- DTOs ------------------------------------------------------------------
@@ -93,7 +95,8 @@ export class StockTakeDto {
 }
 
 export class LevelsQuery extends ListQuery {
-  @IsUUID() storeId: string;
+  /** Leave out for every store added together. */
+  @IsOptional() @IsUUID() storeId?: string;
   /** Only items at or below their reorder level. */
   @IsOptional()
   @Transform(({ value }) => (value === 'true' ? true : value === 'false' ? false : value))
@@ -101,9 +104,13 @@ export class LevelsQuery extends ListQuery {
   lowStock?: boolean;
 }
 
+export const MOVEMENT_TYPES = ['opening', 'receive', 'sale', 'return', 'adjustment', 'transfer_in', 'transfer_out', 'waste'] as const;
+
 export class MovementsQuery extends ListQuery {
   @IsOptional() @IsUUID() storeId?: string;
   @IsOptional() @IsUUID() variantId?: string;
+  /** Only this kind, e.g. waste for the damaged-stock history. */
+  @IsOptional() @IsIn(MOVEMENT_TYPES) type?: (typeof MOVEMENT_TYPES)[number];
 }
 
 // ----- Service -----------------------------------------------------------------
@@ -120,6 +127,7 @@ export class InventoryService {
   levels(ctx: AuthContext, q: LevelsQuery) {
     return this.dbs.withTenant(ctx, async (tx) => {
       await assertOwned(tx, stores, [q.storeId], 'store');
+      const inStore = q.storeId ? sql`AND m.store_id = ${q.storeId}` : sql``;
       const search = q.search
         ? sql`AND (p.name ILIKE ${likeEscape(q.search)} OR v.sku ILIKE ${likeEscape(q.search)} OR v.barcode = ${q.search})`
         : sql``;
@@ -131,7 +139,7 @@ export class InventoryService {
                  COALESCE(SUM(m.quantity), 0) AS on_hand
           FROM product_variants v
           JOIN products p ON p.id = v.product_id
-          LEFT JOIN stock_movements m ON m.variant_id = v.id AND m.store_id = ${q.storeId}
+          LEFT JOIN stock_movements m ON m.variant_id = v.id ${inStore}
           WHERE p.track_stock AND p.active AND v.active ${search}
           GROUP BY v.id, p.id
         )`;
@@ -165,28 +173,73 @@ export class InventoryService {
       const where: SQL[] = [];
       if (q.storeId) where.push(eq(stockMovements.storeId, q.storeId));
       if (q.variantId) where.push(eq(stockMovements.variantId, q.variantId));
+      if (q.type) where.push(eq(stockMovements.type, q.type));
+      if (q.search) where.push(sql`${products.name} ILIKE ${likeEscape(q.search)}`);
       const condition = where.length ? and(...where) : undefined;
-      const [{ total }] = await tx.select({ total: count() }).from(stockMovements).where(condition);
+      const [{ total }] = await tx
+        .select({ total: count() })
+        .from(stockMovements)
+        .innerJoin(productVariants, eq(productVariants.id, stockMovements.variantId))
+        .innerJoin(products, eq(products.id, productVariants.productId))
+        .where(condition);
       const items = await tx
         .select({
           movement: stockMovements,
           productName: products.name,
           variantName: productVariants.name,
           storeName: stores.name,
+          createdByName: users.fullName,
         })
         .from(stockMovements)
         .innerJoin(productVariants, eq(productVariants.id, stockMovements.variantId))
         .innerJoin(products, eq(products.id, productVariants.productId))
         .innerJoin(stores, eq(stores.id, stockMovements.storeId))
+        .leftJoin(users, eq(users.id, stockMovements.createdBy))
         .where(condition)
         .orderBy(desc(stockMovements.createdAt))
         .limit(q.pageSize)
         .offset((q.page - 1) * q.pageSize);
       return {
-        items: items.map((i) => ({ ...i.movement, productName: i.productName, variantName: i.variantName, storeName: i.storeName })),
+        items: items.map((i) => ({ ...i.movement, productName: i.productName, variantName: i.variantName, storeName: i.storeName, createdByName: i.createdByName })),
         total,
         page: q.page,
         pageSize: q.pageSize,
+      };
+    });
+  }
+
+  /** One stocked item: its prices and reorder level, and how many are in each store. */
+  item(ctx: AuthContext, variantId: string) {
+    return this.dbs.withTenant(ctx, async (tx) => {
+      const [row] = await tx
+        .select({ variant: productVariants, productName: products.name, trackStock: products.trackStock, productActive: products.active, categoryName: categories.name })
+        .from(productVariants)
+        .innerJoin(products, eq(products.id, productVariants.productId))
+        .leftJoin(categories, eq(categories.id, products.categoryId))
+        .where(eq(productVariants.id, variantId));
+      found(row, 'Item');
+      const res = await tx.execute(sql`
+        SELECT s.id, s.name, s.code, s.type, coalesce(sum(m.quantity), 0)::text AS on_hand
+        FROM stores s LEFT JOIN stock_movements m ON m.store_id = s.id AND m.variant_id = ${variantId}
+        WHERE s.active
+        GROUP BY s.id ORDER BY s.name`);
+      const perStore = (res.rows as any[]).map((r) => ({ storeId: r.id as string, storeName: r.name as string, storeCode: r.code as string, storeType: r.type as string, onHand: r.on_hand as string }));
+      const v = row.variant;
+      return {
+        variantId: v.id,
+        productId: v.productId,
+        productName: row.productName,
+        variantName: v.name,
+        categoryName: row.categoryName,
+        sku: v.sku,
+        barcode: v.barcode,
+        price: v.price,
+        costPrice: v.costPrice,
+        reorderLevel: v.reorderLevel,
+        trackStock: row.trackStock,
+        active: v.active && row.productActive,
+        onHand: formatFixed3(perStore.reduce((t, s) => t + toMilli(s.onHand), 0n)),
+        stores: perStore,
       };
     });
   }
@@ -340,18 +393,23 @@ export class InventoryService {
   }
 }
 
-/** counted − onHand using fixed-point thousandths (avoids floating-point drift). */
-function decimalDiff(counted: string, onHand: string): string {
-  const toMilli = (s: string) => {
-    const neg = s.startsWith('-');
-    const [i, f = ''] = s.replace('-', '').split('.');
-    const v = BigInt(i) * 1000n + BigInt((f + '000').slice(0, 3));
-    return neg ? -v : v;
-  };
-  const d = toMilli(counted) - toMilli(onHand);
+/** A quantity as whole thousandths. */
+function toMilli(s: string): bigint {
+  const neg = s.startsWith('-');
+  const [i, f = ''] = s.replace('-', '').split('.');
+  const v = BigInt(i) * 1000n + BigInt((f + '000').slice(0, 3));
+  return neg ? -v : v;
+}
+
+function formatFixed3(d: bigint): string {
   const neg = d < 0n;
   const abs = neg ? -d : d;
   return `${neg ? '-' : ''}${abs / 1000n}.${(abs % 1000n).toString().padStart(3, '0')}`;
+}
+
+/** counted − onHand using fixed-point thousandths (avoids floating-point drift). */
+function decimalDiff(counted: string, onHand: string): string {
+  return formatFixed3(toMilli(counted) - toMilli(onHand));
 }
 
 // ----- Controller --------------------------------------------------------------
@@ -366,6 +424,12 @@ export class InventoryController {
   @Get('levels')
   levels(@Ctx() ctx: AuthContext, @Query() q: LevelsQuery) {
     return this.svc.levels(ctx, q);
+  }
+
+  @Can('inventory.view')
+  @Get('items/:id')
+  item(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
+    return this.svc.item(ctx, p.id);
   }
 
   @Can('inventory.view')

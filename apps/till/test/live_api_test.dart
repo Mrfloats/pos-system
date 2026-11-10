@@ -207,4 +207,60 @@ void main() {
     skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    'a manager checks stock, changes a price with the PIN, adjusts stock and writes some off',
+    () async {
+      final admin = AdminState(MemoryStore());
+      await admin.init();
+      expect(await admin.signIn(server: server!, email: 'manager@pos.local', password: 'demo1234'), isNull);
+      final shop = admin.stores.firstWhere((s) => s.code == 'MAIN');
+
+      final all = await admin.call((api) => api.get('/inventory/levels', query: {'pageSize': '5'})) as Map;
+      final first = ((all['items'] as List).first as Map).cast<String, dynamic>();
+      final variantId = first['variantId'] as String;
+      final item = (await admin.call((api) => api.get('/inventory/items/$variantId')) as Map).cast<String, dynamic>();
+      expect(item['onHand'], first['onHand']);
+      final here = (item['stores'] as List).cast<Map>().firstWhere((s) => s['storeId'] == shop.id);
+      final before = parseFixed(here['onHand'], 3);
+
+      // A new price needs the PIN; then it goes back as it was.
+      final oldPrice = item['price'] as String;
+      final newPrice = fromCents(toCents(oldPrice) + 5);
+      await expectLater(
+        admin.call((api) => api.patch('/products/variants/$variantId', {'price': newPrice})),
+        throwsA(isA<ApiException>().having((e) => e.code, 'code', 'pin_required')),
+      );
+      await admin.call((api) => api.patch('/products/variants/$variantId', {'price': newPrice}), pin: '5678');
+      expect(((await admin.call((api) => api.get('/inventory/items/$variantId'))) as Map)['price'], newPrice);
+      await admin.call((api) => api.patch('/products/variants/$variantId', {'price': oldPrice}), pin: '5678');
+
+      Future<void> move(String type, String quantity, String note) => admin.call(
+        (api) => api.post('/inventory/movements', {
+          'storeId': shop.id,
+          'type': type,
+          'note': note,
+          'lines': [
+            {'variantId': variantId, 'quantity': quantity},
+          ],
+        }),
+      );
+      await move('adjustment', '2.000', 'Found: live test');
+      await move('waste', '1.000', 'Expired: live test');
+      final after = (await admin.call((api) => api.get('/inventory/items/$variantId')) as Map)['stores'] as List;
+      expect(parseFixed((after.cast<Map>().firstWhere((s) => s['storeId'] == shop.id))['onHand'], 3), before + 1000);
+
+      final waste = await admin.call((api) => api.get('/inventory/movements', query: {'type': 'waste', 'storeId': shop.id})) as Map;
+      final latest = ((waste['items'] as List).first as Map);
+      expect([latest['note'], latest['quantity'], latest['createdByName']], ['Expired: live test', '-1.000', isNotNull]);
+
+      final trail = await admin.call((api) => api.get('/audit-logs', query: {'action': 'price_change'})).catchError((_) => null);
+      // Managers can't read the audit trail; only owners and admins can.
+      expect(trail, isNull);
+      await admin.signOut();
+      admin.dispose();
+    },
+    skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 }

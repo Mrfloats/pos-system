@@ -19,7 +19,7 @@ void main() {
       final s = admin.session!;
       expect([s.fullName, s.roleLabel, s.staffCode, s.businessName, s.initials], ['Admin User', 'Admin', 'ADM-001', 'Corner Shop', 'AU']);
       expect(s.can('dashboard.view'), isTrue);
-      expect(s.can('products.price'), isFalse);
+      expect(s.can('returns.approve'), isFalse);
       expect(admin.stores.map((x) => x.name), ['Main Store', 'Depot']);
       expect(admin.money('1234.5'), r'$1,234.50');
       expect(store.secrets['admin_refresh'], fake.liveRefresh);

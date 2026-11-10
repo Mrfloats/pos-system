@@ -4,6 +4,7 @@ import 'dart:convert';
 import 'package:floatly_till/admin/admin_state.dart';
 import 'package:floatly_till/core/api.dart';
 import 'package:floatly_till/core/local_store.dart';
+import 'package:floatly_till/core/money.dart';
 import 'package:floatly_till/main.dart';
 import 'package:floatly_till/state/till_state.dart';
 import 'package:flutter/material.dart';
@@ -28,7 +29,158 @@ class FakeServer {
   Map<String, String> lastHeaders = {};
 
   /// What the signed-in person may do.
-  List<String> permissions = ['dashboard.view', 'sales.view', 'inventory.view'];
+  List<String> permissions = ['dashboard.view', 'sales.view', 'inventory.view', 'inventory.adjust', 'damaged.record', 'products.edit', 'products.price'];
+
+  /// Stocked items: variant id → details, with quantity in thousandths per store.
+  final items = <String, Map<String, dynamic>>{
+    'v-rice': {'productId': 'p-rice', 'productName': 'Rice', 'variantName': '5kg', 'sku': 'RICE5', 'barcode': '600111', 'price': '9.50', 'costPrice': '7.00', 'reorderLevel': '10.000', 'stock': {'s1': 4000, 's2': 20000}},
+    'v-oil': {'productId': 'p-oil', 'productName': 'Cooking oil 2L', 'variantName': 'Default', 'sku': null, 'barcode': '600222', 'price': '4.20', 'costPrice': null, 'reorderLevel': null, 'stock': {'s1': 30000}},
+  };
+
+  /// Stock movements, newest first, as GET /inventory/movements lists them.
+  final movements = <Map<String, dynamic>>[];
+
+  /// Every POST /inventory/movements body.
+  final posted = <Map<String, dynamic>>[];
+
+  /// Products added with POST /products.
+  final added = <Map<String, dynamic>>[];
+
+  String _onHand(Map<String, dynamic> item, String? store) {
+    final stock = (item['stock'] as Map).cast<String, int>();
+    final milli = store == null ? stock.values.fold(0, (a, b) => a + b) : stock[store] ?? 0;
+    return formatFixed(milli, 3);
+  }
+
+  Map<String, dynamic> _level(String id, String? store) {
+    final i = items[id]!;
+    return {'variantId': id, ...i, 'onHand': _onHand(i, store)}..remove('stock');
+  }
+
+  http.Response? _stock(http.Request req, String path, Map<String, dynamic> body) {
+    final q = req.url.queryParameters;
+    final store = q['storeId'];
+    if (path == '/inventory/levels') {
+      var ids = items.keys.toList();
+      final search = q['search']?.toLowerCase();
+      if (search != null) ids = [for (final id in ids) if ('${items[id]!['productName']} ${items[id]!['sku']} ${items[id]!['barcode']}'.toLowerCase().contains(search)) id];
+      if (q['lowStock'] == 'true') {
+        ids = [
+          for (final id in ids)
+            if (items[id]!['reorderLevel'] != null && parseFixed(_onHand(items[id]!, store), 3) <= parseFixed(items[id]!['reorderLevel'], 3)) id,
+        ];
+      }
+      return _json({'items': [for (final id in ids) _level(id, store)], 'total': ids.length, 'page': 1, 'pageSize': 30});
+    }
+    if (path.startsWith('/inventory/items/')) {
+      final id = path.substring('/inventory/items/'.length);
+      if (!items.containsKey(id)) return _json({'statusCode': 404, 'message': 'Item not found'}, 404);
+      final i = items[id]!;
+      return _json({
+        ..._level(id, null),
+        'categoryName': 'Groceries',
+        'trackStock': true,
+        'active': true,
+        'stores': [
+          {'storeId': 's2', 'storeName': 'Depot', 'storeCode': 'DEP', 'storeType': 'warehouse', 'onHand': _onHand(i, 's2')},
+          {'storeId': 's1', 'storeName': 'Main Store', 'storeCode': 'MAIN', 'storeType': 'shop', 'onHand': _onHand(i, 's1')},
+        ],
+      });
+    }
+    if (path == '/inventory/movements' && req.method == 'GET') {
+      final list = [
+        for (final m in movements)
+          if ((q['type'] == null || m['type'] == q['type']) && (q['variantId'] == null || m['variantId'] == q['variantId']) && (store == null || m['storeId'] == store)) m,
+      ];
+      return _json({'items': list, 'total': list.length, 'page': 1, 'pageSize': 30});
+    }
+    if (path == '/inventory/movements' && req.method == 'POST') {
+      posted.add(body);
+      for (final l in (body['lines'] as List).cast<Map>()) {
+        final item = items[l['variantId']]!;
+        var milli = parseFixed(l['quantity'], 3);
+        if (body['type'] == 'waste') milli = -milli;
+        final stock = (item['stock'] as Map).cast<String, int>();
+        stock[body['storeId'] as String] = (stock[body['storeId']] ?? 0) + milli;
+        item['stock'] = stock;
+        movements.insert(0, {
+          'id': 'mv-${movements.length}',
+          'variantId': l['variantId'],
+          'productName': item['productName'],
+          'variantName': item['variantName'],
+          'storeId': body['storeId'],
+          'storeName': body['storeId'] == 's1' ? 'Main Store' : 'Depot',
+          'type': body['type'],
+          'quantity': formatFixed(milli, 3),
+          'unitCost': item['costPrice'],
+          'note': body['note'],
+          'createdByName': 'Admin User',
+          'createdAt': '2026-11-10T13:00:00.000Z',
+        });
+      }
+      return _json({'recorded': (body['lines'] as List).length, 'skippedDuplicates': 0}, 201);
+    }
+    if (path.startsWith('/products/variants/') && req.method == 'PATCH') {
+      final id = path.substring('/products/variants/'.length);
+      final item = items[id]!;
+      if (body.containsKey('price') && body['price'] != item['price']) {
+        final given = req.headers['X-Floatly-Pin'];
+        if (given == null) return _json({'statusCode': 403, 'code': 'pin_required', 'message': 'Enter your PIN to confirm this'}, 403);
+        if (given != pin) return _json({'statusCode': 403, 'code': 'wrong_pin', 'message': 'Wrong PIN'}, 403);
+      }
+      for (final k in ['price', 'costPrice', 'reorderLevel']) {
+        if (body.containsKey(k)) item[k] = body[k];
+      }
+      return _json({'id': item['productId']});
+    }
+    if (path == '/products' && req.method == 'POST') {
+      added.add(body);
+      final v = (body['variants'] as List).first as Map;
+      final id = 'v-new-${added.length}';
+      items[id] = {
+        'productId': 'p-new',
+        'productName': body['name'],
+        'variantName': 'Default',
+        'sku': v['sku'],
+        'barcode': v['barcode'],
+        'price': v['price'],
+        'costPrice': v['costPrice'],
+        'reorderLevel': v['reorderLevel'],
+        'stock': <String, int>{},
+      };
+      return _json({
+        'id': 'p-new',
+        'name': body['name'],
+        'variants': [
+          {'id': id, 'name': 'Default'},
+        ],
+      }, 201);
+    }
+    if (path == '/categories') {
+      return _json([
+        {'id': 'c1', 'name': 'Groceries'},
+        {'id': 'c2', 'name': 'Drinks'},
+      ]);
+    }
+    if (path.startsWith('/products/barcode/')) {
+      final code = Uri.decodeComponent(path.substring('/products/barcode/'.length));
+      final id = items.keys.where((k) => items[k]!['barcode'] == code).firstOrNull;
+      if (id == null) return _json({'statusCode': 404, 'message': 'Barcode not found'}, 404);
+      final i = items[id]!;
+      return _json({
+        'match': 'variant',
+        'variantId': id,
+        'product': {
+          'id': i['productId'],
+          'name': i['productName'],
+          'variants': [
+            {'id': id, 'name': i['variantName']},
+          ],
+        },
+      });
+    }
+    return null;
+  }
 
   /// What GET /sales lists, and every set of filters it was asked with.
   List<Map<String, dynamic>> sales = fakeSales();
@@ -161,6 +313,8 @@ class FakeServer {
           },
         });
     }
+    final stock = _stock(req, path, body);
+    if (stock != null) return stock;
     if (path.startsWith('/sales/')) {
       final sale = sales.where((s) => s['id'] == path.substring(7)).firstOrNull;
       if (sale == null) return _json({'statusCode': 404, 'message': 'Sale not found'}, 404);

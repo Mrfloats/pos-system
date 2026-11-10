@@ -2165,3 +2165,87 @@ describe('sales activity filters', () => {
     expect(new Set([...first.body.items, ...second.body.items].map((s: any) => s.id)).size).toBe(4);
   });
 });
+
+describe('inventory on the phone', () => {
+  let ownerT: Record<string, string>;
+  let managerT: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let mainId: string;
+  let branchId: string;
+  let productId: string;
+  let tea: string;
+  let teaBig: string;
+  const I = '/api/v1/inventory';
+  const pin = { 'X-Floatly-Pin': '2580' };
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Phone Stock', 'phonestock@example.com')).accessToken);
+    mainId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    branchId = (await http.post('/api/v1/stores').set(ownerT).send({ name: 'Branch', code: 'BR' }).expect(201)).body.id;
+    const p = await http
+      .post('/api/v1/products')
+      .set(ownerT)
+      .send({ name: 'Tea', variants: [{ name: '100 bags', sku: 'TEA100', barcode: '600999', price: '3.00', costPrice: '2.00', reorderLevel: 10 }, { name: '250 bags', price: '6.50', reorderLevel: 2 }] })
+      .expect(201);
+    productId = p.body.id;
+    const byName = (n: string) => p.body.variants.find((v: any) => v.name === n).id;
+    tea = byName('100 bags');
+    teaBig = byName('250 bags');
+    await http.post(`${I}/movements`).set(ownerT).send({ storeId: mainId, type: 'receive', lines: [{ variantId: tea, quantity: 8 }, { variantId: teaBig, quantity: 5 }] }).expect(201);
+    await http.post(`${I}/movements`).set(ownerT).send({ storeId: branchId, type: 'receive', lines: [{ variantId: tea, quantity: 4 }] }).expect(201);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'phonestock-m@example.com', fullName: 'Stock Manager', password: 'password123', role: 'manager', pin: '2580' }).expect(201);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'phonestock-c@example.com', fullName: 'Stock Cashier', password: 'password123', role: 'cashier' }).expect(201);
+    managerT = auth((await http.post('/api/v1/auth/login').send({ email: 'phonestock-m@example.com', password: 'password123', session: 'mobile' }).expect(200)).body.accessToken);
+    cashierT = auth((await http.post('/api/v1/auth/login').send({ email: 'phonestock-c@example.com', password: 'password123' }).expect(200)).body.accessToken);
+  });
+
+  it('adds up every store when none is chosen, low stock included', async () => {
+    const all = await http.get(`${I}/levels`).set(managerT).expect(200);
+    expect(Object.fromEntries(all.body.items.map((i: any) => [i.variantName, i.onHand]))).toEqual({ '100 bags': '12.000', '250 bags': '5.000' });
+    const low = await http.get(`${I}/levels`).query({ lowStock: true }).set(managerT).expect(200);
+    expect(low.body.items.map((i: any) => i.variantName)).toEqual([]);
+    const branchLow = await http.get(`${I}/levels`).query({ lowStock: true, storeId: branchId }).set(managerT).expect(200);
+    expect(branchLow.body.items.map((i: any) => i.variantName)).toEqual(['100 bags', '250 bags']);
+    expect((await http.get(`${I}/levels`).query({ search: '600999' }).set(managerT).expect(200)).body.total).toBe(1);
+  });
+
+  it('shows one item in every store', async () => {
+    const res = await http.get(`${I}/items/${tea}`).set(managerT).expect(200);
+    expect(res.body).toMatchObject({ productName: 'Tea', variantName: '100 bags', sku: 'TEA100', price: '3.00', costPrice: '2.00', reorderLevel: '10.000', onHand: '12.000', trackStock: true });
+    expect(res.body.stores.map((s: any) => [s.storeName, s.onHand])).toEqual([
+      ['Branch', '4.000'],
+      ['Main Store', '8.000'],
+    ]);
+    await http.get(`${I}/items/${productId}`).set(managerT).expect(404);
+  });
+
+  it("changes one item's price with the PIN, leaving the other as it was", async () => {
+    const url = `/api/v1/products/variants/${tea}`;
+    expect((await http.patch(url).set(managerT).send({ price: '3.25' }).expect(403)).body.code).toBe('pin_required');
+    const res = await http.patch(url).set(managerT).set(pin).send({ price: '3.25', reorderLevel: '6' }).expect(200);
+    const a = res.body.variants.find((v: any) => v.id === tea);
+    const b = res.body.variants.find((v: any) => v.id === teaBig);
+    expect([a.price, a.reorderLevel, a.active]).toEqual(['3.25', '6.000', true]);
+    expect([b.price, b.active]).toEqual(['6.50', true]);
+    // Reorder level and cost alone need no PIN.
+    await http.patch(url).set(managerT).send({ reorderLevel: null, costPrice: '2.10' }).expect(200);
+    await http.patch(url).set(cashierT).send({ reorderLevel: '1' }).expect(403);
+    const trail = await http.get('/api/v1/audit-logs').query({ action: 'price_change' }).set(ownerT).expect(200);
+    expect(trail.body[0]).toMatchObject({ platform: 'mobile', role: 'manager', oldValue: { [tea]: '3.00' }, newValue: { [tea]: '3.25' } });
+  });
+
+  it('records damaged stock and lists it, newest first, with who did it', async () => {
+    await http.post(`${I}/movements`).set(managerT).send({ storeId: mainId, type: 'waste', note: 'Expired: past best-before', lines: [{ variantId: tea, quantity: 2 }] }).expect(201);
+    await http.post(`${I}/movements`).set(managerT).send({ storeId: branchId, type: 'waste', note: 'Damaged: box crushed', lines: [{ variantId: teaBig, quantity: 1 }] }).expect(201);
+    const all = await http.get(`${I}/movements`).query({ type: 'waste' }).set(managerT).expect(200);
+    expect(all.body.total).toBe(2);
+    expect(all.body.items.map((m: any) => [m.note, m.quantity, m.storeName, m.createdByName])).toEqual([
+      ['Damaged: box crushed', '-1.000', 'Branch', 'Stock Manager'],
+      ['Expired: past best-before', '-2.000', 'Main Store', 'Stock Manager'],
+    ]);
+    expect((await http.get(`${I}/movements`).query({ type: 'waste', storeId: mainId }).set(managerT).expect(200)).body.total).toBe(1);
+    expect((await http.get(`${I}/movements`).query({ type: 'waste', search: 'nothing' }).set(managerT).expect(200)).body.total).toBe(0);
+    await http.get(`${I}/movements`).query({ type: 'stolen' }).set(managerT).expect(400);
+    expect((await http.get(`${I}/items/${tea}`).set(managerT).expect(200)).body.onHand).toBe('10.000');
+  });
+});

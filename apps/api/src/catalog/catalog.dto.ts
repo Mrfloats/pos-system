@@ -201,6 +201,13 @@ export class CreateProductDto {
 
 export class UpdateProductDto extends PartialType(CreateProductDto) {}
 
+/** Changes one item's prices or reorder level, leaving the rest of the product as it is. */
+export class UpdateVariantDto {
+  @IsOptional() @ToDecimalString() @IsMoney() price?: string;
+  @IsOptional() @ToDecimalString() @IsMoney() costPrice?: string | null;
+  @IsOptional() @ToDecimalString() @IsQuantity() reorderLevel?: string | null;
+}
+
 export class ProductQuery extends ListQuery {
   @IsOptional() @IsUUID() categoryId?: string;
   @IsOptional() @IsIn(PRODUCT_KINDS) kind?: ProductKind;

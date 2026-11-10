@@ -3,6 +3,7 @@
 //   FLOATLY_SHOTS=1 flutter test test/screenshots_test.dart --update-goldens
 //
 // The pictures land in build/shots. Skipped without FLOATLY_SHOTS.
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:floatly_till/admin/admin_login_screen.dart';
@@ -15,6 +16,7 @@ import 'package:floatly_till/theme.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:http/http.dart' as http;
 
 import 'admin_support.dart';
 
@@ -128,5 +130,41 @@ void main() {
     await open(tester, const Size(412, 900));
     await goTo(tester, 'Receipts');
     await shot('receipts');
+  }, skip: !on);
+
+  testWidgets('inventory', (tester) async {
+    await open(tester, const Size(412, 900));
+    await goTo(tester, 'Inventory');
+    await shot('inventory');
+    await tapAndSettle(tester, find.text('Rice · 5kg'));
+    await shot('item');
+    await tester.tap(find.text('Adjust stock'));
+    await tester.pumpAndSettle();
+    await tester.enterText(find.widgetWithText(TextField, 'How many'), '2');
+    await tester.tap(find.text('Counted again'));
+    await tester.pumpAndSettle();
+    await shot('adjust');
+  }, skip: !on);
+
+  testWidgets('damaged', (tester) async {
+    final (_, fake) = await open(tester, const Size(412, 900));
+    await tester.runAsync(() async {
+      for (final (id, n, note) in [('v-rice', '3', 'Expired: past best-before'), ('v-oil', '1', 'Damaged: bottle cracked')]) {
+        final req = http.Request('POST', Uri.parse('http://x/api/v1/inventory/movements'))
+          ..headers['Authorization'] = 'Bearer ${fake.liveAccess}'
+          ..headers['X-Floatly-Client'] = 'mobile'
+          ..body = jsonEncode({
+            'storeId': 's1',
+            'type': 'waste',
+            'note': note,
+            'lines': [
+              {'variantId': id, 'quantity': n},
+            ],
+          });
+        await fake.handle(req);
+      }
+    });
+    await goTo(tester, 'Damaged Stock');
+    await shot('damaged');
   }, skip: !on);
 }

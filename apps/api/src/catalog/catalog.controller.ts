@@ -25,6 +25,7 @@ import {
   UpdateProductDto,
   UpdateTaxRateDto,
   UpdateUnitDto,
+  UpdateVariantDto,
 } from './catalog.dto.js';
 import { ProductsService } from './products.service.js';
 import {
@@ -71,6 +72,14 @@ export class ProductsController {
   }
 
   @Roles(...MANAGERS)
+  /** One item's selling price, cost or reorder level, without sending the whole product. */
+  @Roles(...MANAGERS)
+  @Can('products.edit')
+  @Patch('variants/:id')
+  updateVariant(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: UpdateVariantDto) {
+    return this.products.updateVariant(ctx, p.id, dto);
+  }
+
   @Can('products.edit')
   @Patch(':id')
   update(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: UpdateProductDto) {

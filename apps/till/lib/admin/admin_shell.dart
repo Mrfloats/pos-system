@@ -4,7 +4,9 @@ import '../theme.dart';
 import '../widgets/common.dart';
 import 'admin_state.dart';
 import 'admin_widgets.dart';
+import 'damaged_screen.dart';
 import 'dashboard_screen.dart';
+import 'inventory_screens.dart';
 import 'sales_screens.dart';
 
 /// One entry in the admin menu. It is shown only to people with [permission]
@@ -22,6 +24,8 @@ class AdminSection {
 final adminSections = <AdminSection>[
   AdminSection(id: 'dashboard', label: 'Dashboard', icon: Icons.space_dashboard_outlined, permission: 'dashboard.view', builder: (_) => const DashboardScreen()),
   AdminSection(id: 'sales', label: 'Sales Activity', icon: Icons.point_of_sale_outlined, permission: 'sales.view', builder: (_) => const SalesActivityScreen()),
+  AdminSection(id: 'inventory', label: 'Inventory', icon: Icons.inventory_2_outlined, permission: 'inventory.view', builder: (_) => const InventoryScreen()),
+  AdminSection(id: 'damaged', label: 'Damaged Stock', icon: Icons.heart_broken_outlined, permission: 'damaged.record', builder: (_) => const DamagedStockScreen()),
   AdminSection(id: 'receipts', label: 'Receipts', icon: Icons.receipt_long_outlined, permission: 'sales.view', builder: (_) => const ReceiptsScreen()),
 ];
 
