@@ -75,37 +75,6 @@ const addDays = (day: string, days: number) => {
 };
 
 @Injectable()
-export class SuppliersService extends TenantCrud<typeof suppliers> {
-  constructor(dbs: DbService, audit: AuditService) {
-    super(dbs, audit, suppliers, { entity: 'Supplier', orderBy: [suppliers.name] });
-  }
-
-  page(ctx: AuthContext, q: { search?: string; page: number; pageSize: number }): Promise<Page<any>> {
-    return this.dbs.withTenant(ctx, async (tx) => {
-      const where = q.search
-        ? or(ilike(suppliers.name, likeEscape(q.search)), ilike(suppliers.phone, likeEscape(q.search)), ilike(suppliers.tin, likeEscape(q.search)))
-        : undefined;
-      const [{ total }] = await tx.select({ total: count() }).from(suppliers).where(where);
-      const items = await tx
-        .select({
-          supplier: suppliers,
-          // In the base currency, so bills in different currencies add up.
-          owed: sql<string>`coalesce((
-            SELECT sum(b.total_base - coalesce((SELECT sum(p.cleared_base) FROM payments p WHERE p.bill_id = b.id AND p.status = 'posted'), 0))
-            FROM bills b WHERE b.supplier_id = "suppliers"."id" AND b.status = 'posted'
-          ), 0)::text`,
-        })
-        .from(suppliers)
-        .where(where)
-        .orderBy(asc(suppliers.name))
-        .limit(q.pageSize)
-        .offset((q.page - 1) * q.pageSize);
-      return { items: items.map((i) => ({ ...i.supplier, owed: fromCents(toCents(i.owed)) })), total, page: q.page, pageSize: q.pageSize };
-    });
-  }
-}
-
-@Injectable()
 export class DocumentsService {
   constructor(
     private readonly dbs: DbService,
@@ -114,6 +83,11 @@ export class DocumentsService {
   ) {}
 
   // ----- Shared helpers ------------------------------------------------------------
+
+  /** Today in the business's time zone. */
+  today(tx: Tx) {
+    return this.ledger.today(tx);
+  }
 
   /** The currency and rate a document uses. The base currency always has rate 1. */
   resolveCurrency(tx: Tx, code: string | undefined, rate: string | undefined) {
@@ -671,6 +645,73 @@ export class DocumentsService {
       });
       await this.audit.log(tx, ctx, 'create', 'Transfer', je.id, dto);
       return je;
+    });
+  }
+}
+
+// After DocumentsService, which it uses.
+@Injectable()
+export class SuppliersService extends TenantCrud<typeof suppliers> {
+  constructor(
+    dbs: DbService,
+    audit: AuditService,
+    private readonly documents: DocumentsService,
+  ) {
+    super(dbs, audit, suppliers, { entity: 'Supplier', orderBy: [suppliers.name] });
+  }
+
+  /**
+   * A supplier with what is owed to them: the total in the base currency, the
+   * bills not yet paid off (oldest due first) and the latest bills and purchases.
+   */
+  async summary(ctx: AuthContext, id: string) {
+    const supplier = await this.get(ctx, id);
+    const [unpaid, recent, totals] = await Promise.all([
+      this.documents.listDocuments(ctx, 'bill', { supplierId: id, status: 'unpaid', page: 1, pageSize: 50 } as DocumentQuery),
+      this.documents.listDocuments(ctx, 'bill', { supplierId: id, page: 1, pageSize: 10 } as DocumentQuery),
+      this.dbs.withTenant(ctx, async (tx) => {
+        const today = await this.documents.today(tx);
+        const res = await tx.execute(sql`
+          SELECT coalesce(sum(owed), 0)::text AS owed, coalesce(sum(owed) FILTER (WHERE due_date < ${today}), 0)::text AS overdue,
+                 (SELECT count(*)::int FROM bills WHERE supplier_id = ${id} AND status = 'posted') AS bills
+          FROM (
+            SELECT b.due_date, b.total_base - coalesce((SELECT sum(p.cleared_base) FROM payments p WHERE p.bill_id = b.id AND p.status = 'posted'), 0) AS owed
+            FROM bills b WHERE b.supplier_id = ${id} AND b.status = 'posted'
+          ) x WHERE owed > 0`);
+        return res.rows[0] as { owed: string; overdue: string; bills: number };
+      }),
+    ]);
+    return {
+      ...supplier,
+      owed: fromCents(toCents(totals.owed)),
+      overdue: fromCents(toCents(totals.overdue)),
+      billCount: totals.bills,
+      unpaidBills: [...unpaid.items].sort((a, b) => (a.dueDate < b.dueDate ? -1 : a.dueDate > b.dueDate ? 1 : 0)),
+      recentBills: recent.items,
+    };
+  }
+
+  page(ctx: AuthContext, q: { search?: string; page: number; pageSize: number }): Promise<Page<any>> {
+    return this.dbs.withTenant(ctx, async (tx) => {
+      const where = q.search
+        ? or(ilike(suppliers.name, likeEscape(q.search)), ilike(suppliers.phone, likeEscape(q.search)), ilike(suppliers.tin, likeEscape(q.search)))
+        : undefined;
+      const [{ total }] = await tx.select({ total: count() }).from(suppliers).where(where);
+      const items = await tx
+        .select({
+          supplier: suppliers,
+          // In the base currency, so bills in different currencies add up.
+          owed: sql<string>`coalesce((
+            SELECT sum(b.total_base - coalesce((SELECT sum(p.cleared_base) FROM payments p WHERE p.bill_id = b.id AND p.status = 'posted'), 0))
+            FROM bills b WHERE b.supplier_id = "suppliers"."id" AND b.status = 'posted'
+          ), 0)::text`,
+        })
+        .from(suppliers)
+        .where(where)
+        .orderBy(asc(suppliers.name))
+        .limit(q.pageSize)
+        .offset((q.page - 1) * q.pageSize);
+      return { items: items.map((i) => ({ ...i.supplier, owed: fromCents(toCents(i.owed)) })), total, page: q.page, pageSize: q.pageSize };
     });
   }
 }

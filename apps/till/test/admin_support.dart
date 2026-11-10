@@ -29,7 +29,19 @@ class FakeServer {
   Map<String, String> lastHeaders = {};
 
   /// What the signed-in person may do.
-  List<String> permissions = ['dashboard.view', 'sales.view', 'inventory.view', 'inventory.adjust', 'damaged.record', 'products.edit', 'products.price'];
+  List<String> permissions = [
+    'dashboard.view',
+    'sales.view',
+    'inventory.view',
+    'inventory.adjust',
+    'damaged.record',
+    'products.edit',
+    'products.price',
+    'customers.view',
+    'customers.edit',
+    'suppliers.view',
+    'suppliers.edit',
+  ];
 
   /// Stocked items: variant id → details, with quantity in thousandths per store.
   final items = <String, Map<String, dynamic>>{
@@ -182,6 +194,86 @@ class FakeServer {
     return null;
   }
 
+  /// Customers and suppliers by id, and every body sent to add or change one.
+  final customers = <String, Map<String, dynamic>>{
+    'c-moyo': {'id': 'c-moyo', 'name': 'Moyo Traders', 'phone': '+263 77 555 0101', 'email': null, 'address': '4 Mbare Road', 'tin': '2000555', 'vatNumber': null, 'creditLimit': '500.00', 'active': true},
+    'c-walk': {'id': 'c-walk', 'name': 'Walk-in Ltd', 'phone': null, 'email': null, 'address': null, 'tin': null, 'vatNumber': null, 'creditLimit': null, 'active': true},
+  };
+  final suppliers = <String, Map<String, dynamic>>{
+    's-grain': {'id': 's-grain', 'name': 'Grain Mills', 'contactName': 'Mr Banda', 'phone': '+263 24 222 0000', 'email': null, 'address': null, 'tin': null, 'vatNumber': null, 'paymentTermsDays': 14, 'active': true},
+  };
+  final peopleSent = <Map<String, dynamic>>[];
+
+  /// Who asked for a list with balances (only bookkeepers may).
+  final peopleQueries = <Map<String, String>>[];
+
+  http.Response? _people(http.Request req, String path, Map<String, dynamic> body) {
+    for (final (base, table) in [('/customers', customers), ('/suppliers', suppliers)]) {
+      if (!path.startsWith(base)) continue;
+      final rest = path.substring(base.length);
+      if (rest.isEmpty && req.method == 'GET') {
+        final q = req.url.queryParameters;
+        peopleQueries.add(q);
+        final search = q['search']?.toLowerCase();
+        final list = [
+          for (final p in table.values)
+            if (search == null || '${p['name']} ${p['phone']}'.toLowerCase().contains(search))
+              {...p, if (base == '/suppliers') 'owed': p['id'] == 's-grain' ? '80.00' : '0.00', if (q['withBalance'] == 'true') 'owed': p['id'] == 'c-moyo' ? '250.00' : '0.00'},
+        ];
+        return _json({'items': list, 'total': list.length, 'page': 1, 'pageSize': 30});
+      }
+      if (rest.isEmpty && req.method == 'POST') {
+        peopleSent.add(body);
+        final id = '${base.substring(1, 2)}-new-${peopleSent.length}';
+        table[id] = {'id': id, 'active': true, ...body};
+        return _json(table[id]!, 201);
+      }
+      final id = rest.substring(1).split('/').first;
+      final p = table[id];
+      if (p == null) return _json({'statusCode': 404, 'message': 'Not found'}, 404);
+      if (req.method == 'PATCH') {
+        peopleSent.add(body);
+        p.addAll(body);
+        return _json(p);
+      }
+      if (rest.endsWith('/summary')) {
+        if (base == '/customers') {
+          final moyo = id == 'c-moyo';
+          return _json({
+            ...p,
+            'owed': moyo ? '250.00' : '0.00',
+            'overdue': moyo ? '100.00' : '0.00',
+            'creditLeft': p['creditLimit'] == null ? null : (moyo ? '250.00' : p['creditLimit']),
+            'salesCount': moyo ? 2 : 0,
+            'spent': moyo ? '12.00' : '0.00',
+            'lastSaleAt': moyo ? '2026-11-10T09:15:00.000Z' : null,
+            'unpaidInvoices': moyo
+                ? [
+                    {'id': 'i1', 'number': 'INV-00002', 'date': '2026-10-21', 'dueDate': '2026-10-21', 'currencyCode': 'USD', 'total': '100.00', 'balance': '100.00', 'state': 'overdue'},
+                    {'id': 'i2', 'number': 'INV-00001', 'date': '2026-11-10', 'dueDate': '2026-11-10', 'currencyCode': 'USD', 'total': '200.00', 'balance': '150.00', 'state': 'part_paid'},
+                  ]
+                : [],
+          });
+        }
+        return _json({
+          ...p,
+          'owed': '80.00',
+          'overdue': '0.00',
+          'billCount': 2,
+          'unpaidBills': [
+            {'id': 'b1', 'number': 'BILL-00001', 'date': '2026-11-10', 'dueDate': '2026-11-24', 'currencyCode': 'USD', 'total': '80.00', 'balance': '80.00', 'state': 'unpaid', 'supplierReference': 'GM-881'},
+          ],
+          'recentBills': [
+            {'id': 'b2', 'number': 'BILL-00002', 'date': '2026-11-09', 'dueDate': '2026-11-23', 'currencyCode': 'USD', 'total': '30.00', 'balance': '0.00', 'state': 'paid', 'storeName': 'Main Store'},
+            {'id': 'b1', 'number': 'BILL-00001', 'date': '2026-11-10', 'dueDate': '2026-11-24', 'currencyCode': 'USD', 'total': '80.00', 'balance': '80.00', 'state': 'unpaid', 'supplierReference': 'GM-881'},
+          ],
+        });
+      }
+      return _json(p);
+    }
+    return null;
+  }
+
   /// What GET /sales lists, and every set of filters it was asked with.
   List<Map<String, dynamic>> sales = fakeSales();
   final salesQueries = <Map<String, String>>[];
@@ -258,6 +350,7 @@ class FakeServer {
         var list = sales;
         if (q['search'] != null) list = [for (final s in list) if ('${s['number']} ${s['customerName']}'.toLowerCase().contains(q['search']!.toLowerCase())) s];
         if (q['cashierId'] != null) list = [for (final s in list) if (s['salespersonId'] == q['cashierId']) s];
+        if (q['customerId'] != null) list = [for (final s in list) if (s['customerId'] == q['customerId']) s];
         if (q['paymentMethod'] != null) list = [for (final s in list) if ((s['paymentMethods'] as List).contains(q['paymentMethod'])) s];
         if (q['status'] != null) list = [for (final s in list) if (s['status'] == q['status']) s];
         if (q['type'] != null) list = [for (final s in list) if (s['type'] == q['type']) s];
@@ -315,6 +408,8 @@ class FakeServer {
     }
     final stock = _stock(req, path, body);
     if (stock != null) return stock;
+    final people = _people(req, path, body);
+    if (people != null) return people;
     if (path.startsWith('/sales/')) {
       final sale = sales.where((s) => s['id'] == path.substring(7)).firstOrNull;
       if (sale == null) return _json({'statusCode': 404, 'message': 'Sale not found'}, 404);
@@ -345,6 +440,7 @@ Map<String, dynamic> _sale(int n, {String type = 'sale', String status = 'comple
   'note': type == 'return' ? 'Torn bag' : null,
   'originalSaleId': original,
   'paymentMethods': methods,
+  'customerId': customer == 'Mai Tino' ? 'c-moyo' : null,
 };
 
 /// The sales the fake server knows: 40 ordinary ones after a few special ones, newest first.

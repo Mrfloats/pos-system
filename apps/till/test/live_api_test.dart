@@ -263,4 +263,31 @@ void main() {
     skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    'a manager looks up customers and suppliers, with what they owe, and adds and edits them',
+    () async {
+      final admin = AdminState(MemoryStore());
+      await admin.init();
+      expect(await admin.signIn(server: server!, email: 'manager@pos.local', password: 'demo1234'), isNull);
+      final tag = DateTime.now().millisecondsSinceEpoch;
+
+      final customer = await admin.call((api) => api.post('/customers', {'name': 'Live Customer $tag', 'phone': '0772 000 000', 'creditLimit': '100.00'})) as Map;
+      final listed = await admin.call((api) => api.get('/customers', query: {'search': 'Live Customer $tag', 'withBalance': 'true'})) as Map;
+      expect((listed['items'] as List).single, containsPair('owed', '0.00'));
+      final summary = await admin.call((api) => api.get('/customers/${customer['id']}/summary')) as Map;
+      expect(summary, containsPair('creditLeft', '100.00'));
+      expect(summary['unpaidInvoices'], isEmpty);
+      await admin.call((api) => api.patch('/customers/${customer['id']}', {'phone': null, 'active': false}));
+      expect(((await admin.call((api) => api.get('/customers/${customer['id']}'))) as Map)['phone'], isNull);
+
+      final supplier = await admin.call((api) => api.post('/suppliers', {'name': 'Live Supplier $tag', 'paymentTermsDays': 7})) as Map;
+      final sup = await admin.call((api) => api.get('/suppliers/${supplier['id']}/summary')) as Map;
+      expect([sup['owed'], sup['paymentTermsDays'], sup['billCount']], ['0.00', 7, 0]);
+      await admin.signOut();
+      admin.dispose();
+    },
+    skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 }

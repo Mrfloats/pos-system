@@ -40,6 +40,14 @@ export class SuppliersController {
     return this.svc.page(ctx, q);
   }
 
+  /** What is owed to the supplier: the total, unpaid bills and the latest bills. Money, so bookkeepers only. */
+  @Roles(...BOOKKEEPERS)
+  @Can('suppliers.view')
+  @Get(':id/summary')
+  summary(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
+    return this.svc.summary(ctx, p.id);
+  }
+
   @Can('suppliers.view')
   @Get(':id')
   get(@Ctx() ctx: AuthContext, @Param() p: IdParam) {

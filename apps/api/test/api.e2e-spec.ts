@@ -2249,3 +2249,91 @@ describe('inventory on the phone', () => {
     expect((await http.get(`${I}/items/${tea}`).set(managerT).expect(200)).body.onHand).toBe('10.000');
   });
 });
+
+describe('customers and suppliers on the phone', () => {
+  let ownerT: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let storeId: string;
+  let today: string;
+  let customerId: string;
+  let otherCustomerId: string;
+  let supplierId: string;
+  let sales: string;
+  let rent: string;
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('People Shop', 'people@example.com')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    today = (await http.get('/api/v1/accounting/periods').set(ownerT)).body.today;
+    const accounts = (await http.get('/api/v1/accounting/accounts').set(ownerT)).body;
+    sales = accounts.find((a: any) => a.systemKey === 'sales').id;
+    rent = accounts.find((a: any) => a.code === '6000').id;
+    customerId = (await http.post('/api/v1/customers').set(ownerT).send({ name: 'Moyo Traders', phone: '+263 77 555 0101', creditLimit: '500' }).expect(201)).body.id;
+    otherCustomerId = (await http.post('/api/v1/customers').set(ownerT).send({ name: 'Walk-in Ltd' }).expect(201)).body.id;
+    supplierId = (await http.post('/api/v1/suppliers').set(ownerT).send({ name: 'Grain Mills', contactName: 'Mr Banda', phone: '+263 24 222 0000', paymentTermsDays: 14 }).expect(201)).body.id;
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'people-cashier@example.com', fullName: 'People Cashier', password: 'password123', role: 'cashier' }).expect(201);
+    cashierT = auth((await http.post('/api/v1/auth/login').send({ email: 'people-cashier@example.com', password: 'password123' }).expect(200)).body.accessToken);
+
+    // Two invoices: one part paid, one overdue.
+    const inv = (date: string, dueDate: string, amount: string) =>
+      http.post('/api/v1/accounting/invoices').set(ownerT).send({ customerId, date, dueDate, lines: [{ accountId: sales, description: 'Maize meal', unitPrice: amount }] }).expect(201);
+    const first = await inv(today, today, '200');
+    await http.post(`/api/v1/accounting/invoices/${first.body.id}/payments`).set(ownerT).send({ accountId: accounts.find((a: any) => a.systemKey === 'cash').id, date: today, amount: '50' }).expect(201);
+    const old = new Date(Date.parse(today) - 20 * 86_400_000).toISOString().slice(0, 10);
+    await inv(old, old, '100');
+    // Till sales to the customer.
+    const v = (await http.post('/api/v1/products').set(ownerT).send({ name: 'Salt', variants: [{ price: '2.00' }] }).expect(201)).body.variants[0].id;
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId: v, quantity: 20 }] }).expect(201);
+    const sale = await http.post('/api/v1/sales').set(ownerT).send({ storeId, customerId, lines: [{ variantId: v, quantity: 5 }], payments: [{ method: 'cash', amount: '10' }] }).expect(201);
+    await http.post('/api/v1/sales').set(ownerT).send({ storeId, customerId, lines: [{ variantId: v, quantity: 2 }], payments: [{ method: 'card', amount: '4' }] }).expect(201);
+    await http.post(`/api/v1/sales/${sale.body.id}/returns`).set(ownerT).send({ lines: [{ lineId: sale.body.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Spilt' }).expect(201);
+    // Two bills for the supplier, one paid.
+    const bill = (amount: string) =>
+      http.post('/api/v1/accounting/bills').set(ownerT).send({ supplierId, date: today, lines: [{ accountId: rent, description: 'Delivery', unitPrice: amount }] }).expect(201);
+    await bill('80');
+    const paidBill = await bill('30');
+    await http.post(`/api/v1/accounting/bills/${paidBill.body.id}/payments`).set(ownerT).send({ accountId: accounts.find((a: any) => a.systemKey === 'cash').id, date: today, amount: '30' }).expect(201);
+  });
+
+  it("shows each customer's balance in the list, to bookkeepers only", async () => {
+    const res = await http.get('/api/v1/customers').query({ withBalance: true }).set(ownerT).expect(200);
+    const owed = Object.fromEntries(res.body.items.map((c: any) => [c.name, c.owed]));
+    expect(owed).toEqual({ 'Moyo Traders': '250.00', 'Walk-in Ltd': '0.00' });
+    expect((await http.get('/api/v1/customers').set(ownerT).expect(200)).body.items[0].owed).toBeUndefined();
+    await http.get('/api/v1/customers').query({ withBalance: true }).set(cashierT).expect(403);
+    await http.get('/api/v1/customers').set(cashierT).expect(200);
+  });
+
+  it('sums a customer up: owed, overdue, credit left, spent, and unpaid invoices oldest first', async () => {
+    const res = await http.get(`/api/v1/customers/${customerId}/summary`).set(ownerT).expect(200);
+    expect(res.body).toMatchObject({ name: 'Moyo Traders', owed: '250.00', overdue: '100.00', creditLimit: '500.00', creditLeft: '250.00', salesCount: 2, spent: '12.00' });
+    expect(res.body.lastSaleAt).toBeTruthy();
+    expect(res.body.unpaidInvoices.map((i: any) => [i.balance, i.state])).toEqual([
+      ['100.00', 'overdue'],
+      ['150.00', 'part_paid'],
+    ]);
+    const none = await http.get(`/api/v1/customers/${otherCustomerId}/summary`).set(ownerT).expect(200);
+    expect(none.body).toMatchObject({ owed: '0.00', creditLeft: null, salesCount: 0, spent: '0.00', lastSaleAt: null, unpaidInvoices: [] });
+    await http.get(`/api/v1/customers/${customerId}/summary`).set(cashierT).expect(403);
+    const purchases = await http.get('/api/v1/sales').query({ customerId, excludeQuotations: 'true' }).set(ownerT).expect(200);
+    expect(purchases.body).toMatchObject({ total: 3, totalBase: '12.00' });
+  });
+
+  it('sums a supplier up: owed, unpaid bills and the latest bills', async () => {
+    const res = await http.get(`/api/v1/suppliers/${supplierId}/summary`).set(ownerT).expect(200);
+    expect(res.body).toMatchObject({ name: 'Grain Mills', contactName: 'Mr Banda', paymentTermsDays: 14, owed: '80.00', overdue: '0.00', billCount: 2 });
+    expect(res.body.unpaidBills.map((b: any) => b.balance)).toEqual(['80.00']);
+    expect(res.body.recentBills.map((b: any) => b.state).sort()).toEqual(['paid', 'unpaid']);
+    await http.get(`/api/v1/suppliers/${supplierId}/summary`).set(cashierT).expect(403);
+    await http.get('/api/v1/suppliers/00000000-0000-7000-8000-000000000000/summary').set(ownerT).expect(404);
+  });
+
+  it('adds and edits customers and suppliers, with the audit trail saying it was a phone', async () => {
+    const mobile = { 'X-Floatly-Client': 'mobile' };
+    await http.patch(`/api/v1/customers/${otherCustomerId}`).set(ownerT).set(mobile).send({ phone: '0772 000 111', email: 'walkin@example.com' }).expect(200);
+    await http.patch(`/api/v1/suppliers/${supplierId}`).set(ownerT).set(mobile).send({ email: 'orders@grainmills.example' }).expect(200);
+    await http.patch(`/api/v1/suppliers/${supplierId}`).set(cashierT).send({ email: 'x@example.com' }).expect(403);
+    const trail = await http.get('/api/v1/audit-logs').query({ platform: 'mobile' }).set(ownerT).expect(200);
+    expect(trail.body.map((r: any) => r.entity).sort()).toEqual(['Customer', 'Supplier']);
+  });
+});

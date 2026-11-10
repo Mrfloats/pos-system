@@ -10,6 +10,7 @@ import { ReportsService } from './reports.service.js';
   controllers: [SuppliersController, AccountingController, PurchasesController],
   providers: [LedgerService, AccountingService, DocumentsService, SuppliersService, ReportsService, PurchasesService],
   // Other modules (stock, and later sales) post to the ledger through LedgerService.
-  exports: [LedgerService],
+  // Customers and suppliers on the phone list unpaid invoices and bills through DocumentsService.
+  exports: [LedgerService, DocumentsService],
 })
 export class AccountingModule {}

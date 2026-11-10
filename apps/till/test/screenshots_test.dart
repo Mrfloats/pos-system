@@ -167,4 +167,22 @@ void main() {
     await goTo(tester, 'Damaged Stock');
     await shot('damaged');
   }, skip: !on);
+
+  testWidgets('customers', (tester) async {
+    await open(tester, const Size(412, 900));
+    await goTo(tester, 'Customers');
+    await shot('customers');
+    await tapAndSettle(tester, find.text('Moyo Traders'));
+    await shot('customer');
+  }, skip: !on);
+
+  testWidgets('supplier', (tester) async {
+    await open(tester, const Size(412, 1100));
+    await goTo(tester, 'Suppliers');
+    await tapAndSettle(tester, find.text('Grain Mills'));
+    await shot('supplier');
+    await tester.tap(find.byTooltip('Edit'));
+    await tester.pumpAndSettle();
+    await shot('supplier-edit');
+  }, skip: !on);
 }
