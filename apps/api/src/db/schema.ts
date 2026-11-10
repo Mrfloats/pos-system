@@ -207,6 +207,8 @@ export const memberships = pgTable(
     role: memberRole('role').notNull(),
     /** Hashed 4–6 digit PIN for quick sign-in on a till. */
     pinHash: text('pin_hash'),
+    /** Permissions an owner took away from this person (see common/permissions.ts). Their role gives the rest. */
+    deniedPermissions: text('denied_permissions').array().notNull().default(sql`'{}'::text[]`),
     active: boolean('active').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1317,6 +1319,15 @@ export const auditLogs = pgTable(
     entity: text('entity').notNull(),
     entityId: text('entity_id'),
     data: jsonb('data'),
+    /** The person's role when they did it. */
+    role: text('role'),
+    /** The app it was done from: web, till or mobile. */
+    platform: text('platform'),
+    storeId: uuid('store_id').references(() => stores.id, { onDelete: 'set null' }),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    /** For changes to a value (a price, a stock level): what it was and what it became. */
+    oldValue: jsonb('old_value'),
+    newValue: jsonb('new_value'),
     createdAt: createdAt(),
   },
   (t) => [index('audit_logs_tenant_created_idx').on(t.tenantId, t.createdAt), tenantIsolation(t)],

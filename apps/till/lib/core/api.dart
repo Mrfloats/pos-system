@@ -20,10 +20,13 @@ class ApiException implements Exception {
 
 /// Talks to the Floatly API, the same one the backoffice uses.
 class Api {
-  Api({required String server, this.token}) : base = apiBase(server);
+  Api({required String server, this.token, this.client = 'till'}) : base = apiBase(server);
 
   final String base;
   final String? token;
+
+  /// Which app is calling ("till" or "mobile"), kept in the backoffice's audit trail.
+  final String client;
 
   static final _client = http.Client();
 
@@ -49,7 +52,8 @@ class Api {
     if (query != null) uri = uri.replace(queryParameters: query);
     final request = http.Request(method, uri)
       ..headers['Accept'] = 'application/json'
-      ..headers['Content-Type'] = 'application/json';
+      ..headers['Content-Type'] = 'application/json'
+      ..headers['X-Floatly-Client'] = client;
     if (token != null) request.headers['Authorization'] = 'Bearer $token';
     if (body != null) request.body = jsonEncode(body);
 

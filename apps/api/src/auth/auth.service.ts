@@ -11,6 +11,7 @@ import { createHash } from 'node:crypto';
 import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { type AuthContext, DEVICE_REVOKED, JwtPayload } from '../common/auth-context.js';
+import { effectivePermissions } from '../common/permissions.js';
 import { DbService, Tx } from '../db/db.service.js';
 import { devices, memberships, plans, signupRequests, stores, storeStaff, tenants, users } from '../db/schema.js';
 import { ChangePasswordDto, LoginDto, SignupDto, SignupRequestDto, TillSignInDto } from './auth.dto.js';
@@ -249,6 +250,7 @@ export class AuthService {
           tenantId: memberships.tenantId,
           membershipId: memberships.id,
           role: memberships.role,
+          denied: memberships.deniedPermissions,
           name: tenants.name,
           businessType: tenants.businessType,
         })
@@ -280,7 +282,8 @@ export class AuthService {
     return {
       user,
       tenant,
-      membership: { id: current.membershipId, role: current.role },
+      // What the apps show; the API checks each request itself.
+      membership: { id: current.membershipId, role: current.role, permissions: effectivePermissions(current.role, current.denied) },
       businesses: businesses.map((b) => ({
         tenantId: b.tenantId,
         name: b.name,

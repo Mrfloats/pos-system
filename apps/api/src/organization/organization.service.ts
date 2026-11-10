@@ -9,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, asc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext } from '../common/auth-context.js';
+import { effectivePermissions, permissionCatalog } from '../common/permissions.js';
 import { TenantCrud } from '../common/tenant-crud.js';
 import { found } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
@@ -108,6 +109,7 @@ export class StaffService {
           phone: users.phone,
           role: memberships.role,
           active: memberships.active,
+          deniedPermissions: memberships.deniedPermissions,
           hasPin: isNotNull(memberships.pinHash),
           lastLoginAt: users.lastLoginAt,
           createdAt: memberships.createdAt,
@@ -118,9 +120,17 @@ export class StaffService {
       const access = await tx.select().from(storeStaff);
       return rows.map((r) => ({
         ...r,
+        // Owners can't be restricted.
+        deniedPermissions: r.role === 'owner' ? [] : r.deniedPermissions,
+        permissions: effectivePermissions(r.role, r.deniedPermissions),
         storeIds: access.filter((a) => a.membershipId === r.id).map((a) => a.storeId),
       }));
     });
+  }
+
+  /** Every permission, with the roles that start with it. */
+  permissions() {
+    return permissionCatalog();
   }
 
   async create(ctx: AuthContext, dto: CreateStaffDto) {
@@ -187,16 +197,33 @@ export class StaffService {
       if (id === ctx.membershipId && dto.active === false) {
         throw new BadRequestException('You cannot deactivate yourself');
       }
+      if (dto.deniedPermissions) {
+        if (ctx.role !== 'owner') throw new ForbiddenException("Only an owner can change what staff are permitted to do");
+        if ((dto.role ?? current.role) === 'owner' && dto.deniedPermissions.length) {
+          throw new BadRequestException('An owner always has every permission');
+        }
+      }
 
       const changes: Partial<typeof memberships.$inferInsert> = {};
       if (dto.role) changes.role = dto.role;
       if (dto.active !== undefined) changes.active = dto.active;
       if (dto.pin) changes.pinHash = await this.checkedPinHash(tx, dto.pin, id);
+      if (dto.deniedPermissions) changes.deniedPermissions = dto.deniedPermissions;
+      // Someone made an owner keeps nothing taken away.
+      else if (dto.role === 'owner') changes.deniedPermissions = [];
       if (Object.keys(changes).length) {
         await tx.update(memberships).set(changes).where(eq(memberships.id, id));
       }
       if (dto.storeIds) await this.setStores(tx, ctx, id, dto.storeIds);
-      await this.audit.log(tx, ctx, 'update', 'Staff', id, { ...dto, pin: dto.pin ? '***' : undefined });
+      await this.audit.log(
+        tx,
+        ctx,
+        'update',
+        'Staff',
+        id,
+        { ...dto, pin: dto.pin ? '***' : undefined },
+        dto.deniedPermissions ? { old: { deniedPermissions: current.deniedPermissions }, new: { deniedPermissions: dto.deniedPermissions } } : undefined,
+      );
     });
     return this.get(ctx, id);
   }

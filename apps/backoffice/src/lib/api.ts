@@ -91,6 +91,8 @@ export async function api<T>(
     res = await fetch(url, {
       method: options.method ?? "GET",
       headers: {
+        // Says which app made the change, for the audit trail.
+        "X-Floatly-Client": "web",
         ...(options.body !== undefined ? { "Content-Type": "application/json" } : {}),
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
@@ -152,7 +154,7 @@ export interface Session {
   accessToken?: string;
   user: { id: string; email: string; fullName: string; phone: string | null };
   tenant: Tenant;
-  membership: { id: string; role: Role };
+  membership: { id: string; role: Role; permissions: string[] };
   businesses: { tenantId: string; name: string; businessType: BusinessType; role: Role }[];
 }
 
@@ -305,6 +307,17 @@ export interface StaffMember {
   hasPin: boolean;
   lastLoginAt: string | null;
   storeIds: string[];
+  /** Permissions an owner took away from this person; their role gives the rest. */
+  deniedPermissions: string[];
+  permissions: string[];
+}
+
+/** Something a staff member may do, and the roles that start with it. */
+export interface PermissionInfo {
+  key: string;
+  group: string;
+  label: string;
+  roles: Role[];
 }
 
 export interface ModifierGroup {

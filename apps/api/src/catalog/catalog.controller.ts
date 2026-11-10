@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsString, Length } from 'class-validator';
 import { eq } from 'drizzle-orm';
 import { ADMINS, ALL_ROLES, type AuthContext, Ctx, MANAGERS, Roles } from '../common/auth-context.js';
+import { Can } from '../common/permissions.js';
 import { categories } from '../db/schema.js';
 import { IdParam } from '../organization/organization.dto.js';
 import {
@@ -62,12 +63,14 @@ export class ProductsController {
   }
 
   @Roles(...MANAGERS)
+  @Can('products.edit')
   @Post()
   create(@Ctx() ctx: AuthContext, @Body() dto: CreateProductDto) {
     return this.products.create(ctx, dto);
   }
 
   @Roles(...MANAGERS)
+  @Can('products.edit')
   @Patch(':id')
   update(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: UpdateProductDto) {
     return this.products.update(ctx, p.id, dto);
@@ -75,6 +78,7 @@ export class ProductsController {
 
   /** Archives the product (hidden from the till, history kept). */
   @Roles(...MANAGERS)
+  @Can('products.edit')
   @Delete(':id')
   archive(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.products.archive(ctx, p.id);
@@ -237,6 +241,7 @@ export class PriceListsController {
   }
 
   @Roles(...MANAGERS)
+  @Can('products.price')
   @Put(':id/items')
   setItems(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: SetPriceListItemsDto) {
     return this.svc.setItems(ctx, p.id, dto);

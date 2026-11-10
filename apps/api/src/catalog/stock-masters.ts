@@ -5,6 +5,7 @@ import { ArrayMaxSize, ArrayUnique, IsArray, IsOptional, IsString, IsUUID, Lengt
 import { and, asc, count, eq, ilike, inArray, or, sql } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext, Ctx, MANAGERS, Roles } from '../common/auth-context.js';
+import { Can } from '../common/permissions.js';
 import { assertOwned } from '../common/ownership.js';
 import { found, IsMoney, likeEscape, ListQuery, ToDecimalString, Trim } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
@@ -202,6 +203,7 @@ export class StorePricesController {
   }
 
   @Roles(...MANAGERS)
+  @Can('products.price')
   @Put()
   set(@Ctx() ctx: AuthContext, @Body() dto: SetStorePricesDto) {
     return this.svc.set(ctx, dto);

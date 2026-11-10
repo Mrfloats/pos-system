@@ -4,6 +4,7 @@ import { Type } from 'class-transformer';
 import { IsIn, IsInt, IsOptional, IsString, IsUUID, Matches, Max, Min } from 'class-validator';
 import { sql, SQL } from 'drizzle-orm';
 import { type AuthContext, Ctx, Roles, STOCK_WRITERS } from '../common/auth-context.js';
+import { Can } from '../common/permissions.js';
 import { likeEscape, Trim } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
 import { tenants } from '../db/schema.js';
@@ -268,6 +269,7 @@ export class StockReportsService {
 @ApiBearerAuth()
 // Costs and values are for people who manage stock or the books, not the till.
 @Roles(...STOCK_WRITERS, 'accountant')
+@Can('reports.stock')
 @Controller('inventory/reports')
 export class StockReportsController {
   constructor(private readonly svc: StockReportsService) {}

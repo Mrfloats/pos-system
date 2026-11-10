@@ -15,6 +15,7 @@ import {
   MinLength,
 } from 'class-validator';
 import type { Role } from '../common/auth-context.js';
+import { type Permission, PERMISSION_KEYS } from '../common/permissions.js';
 import { Trim } from '../common/validation.js';
 import { BUSINESS_TYPES, type BusinessType } from '../auth/auth.dto.js';
 
@@ -72,6 +73,8 @@ export class UpdateStaffDto {
   @IsOptional() @IsBoolean() active?: boolean;
   @IsOptional() @Matches(/^\d{4,6}$/, { message: 'pin must be 4–6 digits' }) pin?: string;
   @IsOptional() @IsArray() @ArrayUnique() @IsUUID('all', { each: true }) storeIds?: string[];
+  /** Permissions to take away from this person; their role gives the rest. Owners only. */
+  @IsOptional() @IsArray() @ArrayUnique() @IsIn(PERMISSION_KEYS, { each: true }) deniedPermissions?: Permission[];
 }
 
 export const DEVICE_KINDS = ['till', 'handheld', 'kitchen_display', 'kiosk'] as const;

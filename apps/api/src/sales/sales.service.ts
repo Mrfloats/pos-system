@@ -862,7 +862,7 @@ export class SalesService {
         ],
       });
       await tx.update(sales).set({ journalEntryId: je.id }).where(eq(sales.id, ret.id));
-      await this.audit.log(tx, ctx, 'create', 'Sale return', ret.id, { number, sale: sale.number, total: fromCents(total) });
+      await this.audit.log(tx, ctx, 'create', 'Sale return', ret.id, { number, sale: sale.number, total: fromCents(total), reason: dto.reason }, { storeId: sale.storeId });
       return this.getIn(tx, ret.id);
     });
   }
@@ -903,7 +903,7 @@ export class SalesService {
       }
       await tx.update(sales).set({ status: 'void' }).where(eq(sales.id, id));
       await tx.update(saleLines).set({ kitchenStatus: null }).where(eq(saleLines.saleId, id));
-      await this.audit.log(tx, ctx, 'void', s.type === 'sale' ? 'Sale' : 'Sale return', id, { number: s.number });
+      await this.audit.log(tx, ctx, 'void', s.type === 'sale' ? 'Sale' : 'Sale return', id, { number: s.number, total: s.total }, { storeId: s.storeId, old: { status: s.status }, new: { status: 'void' } });
       return this.getIn(tx, id);
     });
   }

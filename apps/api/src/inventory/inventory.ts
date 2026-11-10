@@ -18,6 +18,7 @@ import { AccountingModule } from '../accounting/accounting.module.js';
 import { LedgerService } from '../accounting/ledger.service.js';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext, Ctx, Roles, STOCK_WRITERS } from '../common/auth-context.js';
+import { assertCan, Can } from '../common/permissions.js';
 import { assertOwned } from '../common/ownership.js';
 import {
   IsMoney,
@@ -35,6 +36,9 @@ import { StockReportsController, StockReportsService } from './stock-reports.js'
 // ----- DTOs ------------------------------------------------------------------
 
 export const MANUAL_MOVEMENT_TYPES = ['opening', 'receive', 'adjustment', 'waste'] as const;
+
+/** The audit trail keeps before-and-after levels for this many items of one entry; a bigger one keeps the first ones. */
+const AUDIT_MAX_ITEMS = 100;
 
 /** Journal entry descriptions for the value of stock movements. */
 const STOCK_POSTING_LABELS: Record<(typeof MANUAL_MOVEMENT_TYPES)[number], string> = {
@@ -213,16 +217,23 @@ export class InventoryService {
           createdBy: ctx.userId,
         };
       });
+      const variantIds = [...new Set(dto.lines.map((l) => l.variantId))].slice(0, AUDIT_MAX_ITEMS);
+      const before = await this.onHand(tx, dto.storeId, variantIds);
       // Duplicate clientIds (a retried request) are silently skipped.
       const inserted = await tx.insert(stockMovements).values(values).onConflictDoNothing().returning();
       await this.ledger.postStockMovements(tx, ctx, inserted, {
         description: STOCK_POSTING_LABELS[dto.type],
         reference: dto.reference,
       });
-      await this.audit.log(tx, ctx, `stock_${dto.type}`, 'Stock', dto.storeId, {
-        lines: dto.lines.length,
-        reference: dto.reference,
-      });
+      await this.audit.log(
+        tx,
+        ctx,
+        `stock_${dto.type}`,
+        'Stock',
+        dto.storeId,
+        { lines: dto.lines.length, reference: dto.reference, reason: dto.note },
+        { storeId: dto.storeId, old: before, new: await this.onHand(tx, dto.storeId, variantIds) },
+      );
       return { recorded: inserted.length, skippedDuplicates: values.length - inserted.length, movements: inserted };
     });
   }
@@ -242,7 +253,7 @@ export class InventoryService {
         ];
       });
       const inserted = await tx.insert(stockMovements).values(rows).returning();
-      await this.audit.log(tx, ctx, 'stock_transfer', 'Stock', null, { ...dto, reference });
+      await this.audit.log(tx, ctx, 'stock_transfer', 'Stock', null, { ...dto, reference }, { storeId: dto.fromStoreId });
       return { reference, movements: inserted };
     });
   }
@@ -288,9 +299,32 @@ export class InventoryService {
             .returning()
         : [];
       await this.ledger.postStockMovements(tx, ctx, inserted, { description: 'Stock take differences', reference });
-      await this.audit.log(tx, ctx, 'stock_take', 'Stock', dto.storeId, { counted: dto.lines.length, adjusted: inserted.length, reference });
+      await this.audit.log(
+        tx,
+        ctx,
+        'stock_take',
+        'Stock',
+        dto.storeId,
+        { counted: dto.lines.length, adjusted: inserted.length, reference },
+        {
+          storeId: dto.storeId,
+          old: Object.fromEntries(adjustments.slice(0, AUDIT_MAX_ITEMS).map((a) => [a.line.variantId, onHand.get(a.line.variantId) ?? '0'])),
+          new: Object.fromEntries(adjustments.slice(0, AUDIT_MAX_ITEMS).map((a) => [a.line.variantId, a.line.countedQuantity])),
+        },
+      );
       return { counted: dto.lines.length, adjusted: inserted.length, reference, movements: inserted };
     });
+  }
+
+  /** Quantity in one store for these items, by variant id (for the audit trail's before and after). */
+  private async onHand(tx: Tx, storeId: string, variantIds: string[]): Promise<Record<string, string>> {
+    const rows = await tx
+      .select({ variantId: stockMovements.variantId, onHand: sql<string>`sum(${stockMovements.quantity})` })
+      .from(stockMovements)
+      .where(and(eq(stockMovements.storeId, storeId), inArray(stockMovements.variantId, variantIds)))
+      .groupBy(stockMovements.variantId);
+    const found = new Map(rows.map((r) => [r.variantId, r.onHand]));
+    return Object.fromEntries(variantIds.map((id) => [id, found.get(id) ?? '0']));
   }
 
   private async assertStockable(tx: Tx, variantIds: string[]) {
@@ -328,11 +362,13 @@ function decimalDiff(counted: string, onHand: string): string {
 export class InventoryController {
   constructor(private readonly svc: InventoryService) {}
 
+  @Can('inventory.view')
   @Get('levels')
   levels(@Ctx() ctx: AuthContext, @Query() q: LevelsQuery) {
     return this.svc.levels(ctx, q);
   }
 
+  @Can('inventory.view')
   @Get('movements')
   movements(@Ctx() ctx: AuthContext, @Query() q: MovementsQuery) {
     return this.svc.movements(ctx, q);
@@ -341,16 +377,19 @@ export class InventoryController {
   @Roles(...STOCK_WRITERS)
   @Post('movements')
   record(@Ctx() ctx: AuthContext, @Body() dto: CreateMovementsDto) {
+    assertCan(ctx, dto.type === 'waste' ? 'damaged.record' : 'inventory.adjust');
     return this.svc.record(ctx, dto);
   }
 
   @Roles(...STOCK_WRITERS)
+  @Can('inventory.adjust')
   @Post('transfers')
   transfer(@Ctx() ctx: AuthContext, @Body() dto: TransferDto) {
     return this.svc.transfer(ctx, dto);
   }
 
   @Roles(...STOCK_WRITERS)
+  @Can('inventory.adjust')
   @Post('stock-takes')
   stockTake(@Ctx() ctx: AuthContext, @Body() dto: StockTakeDto) {
     return this.svc.stockTake(ctx, dto);

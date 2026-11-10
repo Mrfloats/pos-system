@@ -3,6 +3,7 @@ import { and, asc, count, eq, exists, ilike, inArray, isNull, or, sql, SQL } fro
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext } from '../common/auth-context.js';
 import { assertOwned } from '../common/ownership.js';
+import { assertCan } from '../common/permissions.js';
 import { found, likeEscape, Page } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
 import {
@@ -190,12 +191,35 @@ export class ProductsService {
       await this.checkReferences(tx, dto);
 
       const { variants, modifierGroupIds, ...fields } = dto;
+      // Selling prices that would change, for the permission check and the audit trail.
+      const current = variants?.some((v) => v.id)
+        ? await tx.select({ id: productVariants.id, name: productVariants.name, price: productVariants.price }).from(productVariants).where(eq(productVariants.productId, id))
+        : [];
+      const priceChanges = (variants ?? []).flatMap((v) => {
+        const was = current.find((c) => c.id === v.id);
+        return was && Number(was.price) !== Number(v.price) ? [{ variantId: was.id, name: was.name, old: was.price, new: v.price }] : [];
+      });
+      if (priceChanges.length) assertCan(ctx, 'products.price');
       if (Object.keys(fields).length) {
         await tx.update(products).set(fields).where(eq(products.id, id));
       }
       if (variants) await this.saveVariants(tx, ctx, id, variants, false);
       if (modifierGroupIds) await this.setModifierGroups(tx, ctx, id, modifierGroupIds);
       await this.audit.log(tx, ctx, 'update', 'Product', id, dto);
+      if (priceChanges.length) {
+        await this.audit.log(
+          tx,
+          ctx,
+          'price_change',
+          'Product',
+          id,
+          { variants: priceChanges.map((c) => c.name) },
+          {
+            old: Object.fromEntries(priceChanges.map((c) => [c.variantId, c.old])),
+            new: Object.fromEntries(priceChanges.map((c) => [c.variantId, c.new])),
+          },
+        );
+      }
     });
     return this.get(ctx, id);
   }

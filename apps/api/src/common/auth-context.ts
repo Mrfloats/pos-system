@@ -1,4 +1,5 @@
 import { createParamDecorator, ExecutionContext, SetMetadata } from '@nestjs/common';
+import type { Permission } from './permissions.js';
 
 export type Role =
   | 'owner'
@@ -9,12 +10,27 @@ export type Role =
   | 'stock_clerk'
   | 'accountant';
 
+/** Which app a request came from (the X-Floatly-Client header), kept in the audit trail. */
+export const PLATFORMS = ['web', 'till', 'mobile'] as const;
+export type Platform = (typeof PLATFORMS)[number] | 'unknown';
+export const CLIENT_HEADER = 'x-floatly-client';
+
+/** "mobile", "mobile/1.0.0" → mobile. Anything else → unknown. */
+export function platformOf(header: unknown): Platform {
+  const name = typeof header === 'string' ? header.trim().toLowerCase().split('/')[0] : '';
+  return (PLATFORMS as readonly string[]).includes(name) ? (name as Platform) : 'unknown';
+}
+
 /** The signed-in staff member, attached to the request by the auth guard. */
 export interface AuthContext {
   userId: string;
   tenantId: string;
   membershipId: string;
   role: Role;
+  /** What they may do: the role's permissions, less any an owner took away. */
+  permissions: ReadonlySet<Permission>;
+  /** The app the request came from. */
+  platform: Platform;
   /** Set when signed in on a till with a PIN. */
   deviceId?: string;
 }

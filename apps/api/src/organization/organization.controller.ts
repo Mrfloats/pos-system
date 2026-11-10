@@ -84,6 +84,13 @@ export class StaffController {
     return this.staff.list(ctx);
   }
 
+  /** The permissions an owner can switch on and off for a staff member. */
+  @Roles(...MANAGERS)
+  @Get('permissions')
+  permissions() {
+    return this.staff.permissions();
+  }
+
   @Roles(...ADMINS)
   @Post()
   create(@Ctx() ctx: AuthContext, @Body() dto: CreateStaffDto) {

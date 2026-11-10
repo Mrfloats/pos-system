@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import { useToast } from "@/components/toast";
 import { Badge, Button, Checkbox, Dialog, Field, FormError, Input, PageHeader, Select, Spinner, Table, TableMessage, Td, Th } from "@/components/ui";
-import { api, Role, StaffMember } from "@/lib/api";
+import { api, PermissionInfo, Role, StaffMember } from "@/lib/api";
 import { dateTime, ROLE_LABELS } from "@/lib/format";
 import { ADMINS, useSession } from "@/lib/session";
 
@@ -27,6 +27,7 @@ interface Draft {
   pin: string;
   active: boolean;
   storeIds: string[];
+  deniedPermissions: string[];
 }
 
 export default function StaffPage() {
@@ -37,6 +38,9 @@ export default function StaffPage() {
   const [draft, setDraft] = useState<Draft | null>(null);
   const [error, setError] = useState<string | null>(null);
   const isAdmin = can(...ADMINS);
+  // Only an owner sets what each person may do; owners themselves always have everything.
+  const isOwner = session.membership.role === "owner";
+  const catalog = useQuery({ queryKey: ["staff", "permissions"], queryFn: () => api<PermissionInfo[]>("/staff/permissions"), enabled: isOwner });
   const roles = (Object.keys(ROLE_LABELS) as Role[]).filter((r) => r !== "owner" || session.membership.role === "owner");
 
   const save = useMutation({
@@ -44,7 +48,13 @@ export default function StaffPage() {
       if (d.id) {
         return api(`/staff/${d.id}`, {
           method: "PATCH",
-          body: { role: d.role, active: d.active, pin: d.pin || undefined, storeIds: d.storeIds },
+          body: {
+            role: d.role,
+            active: d.active,
+            pin: d.pin || undefined,
+            storeIds: d.storeIds,
+            ...(isOwner ? { deniedPermissions: d.role === "owner" ? [] : d.deniedPermissions } : {}),
+          },
         });
       }
       return api("/staff", {
@@ -61,6 +71,9 @@ export default function StaffPage() {
   });
 
   const storeName = (id: string) => stores.find((s) => s.id === id)?.code ?? "?";
+  // What the chosen role may do, by group, for the owner to untick.
+  const rolePermissions = draft ? (catalog.data ?? []).filter((p) => p.roles.includes(draft.role)) : [];
+  const permissionGroups = [...new Set(rolePermissions.map((p) => p.group))];
 
   return (
     <div>
@@ -69,7 +82,7 @@ export default function StaffPage() {
         description="Who can sign in, what they can do, and the PIN they use on the till."
         actions={
           isAdmin && (
-            <Button onClick={() => (setError(null), setDraft({ email: "", fullName: "", password: "", role: "cashier", pin: "", active: true, storeIds: [] }))}>
+            <Button onClick={() => (setError(null), setDraft({ email: "", fullName: "", password: "", role: "cashier", pin: "", active: true, storeIds: [], deniedPermissions: [] }))}>
               Add staff member
             </Button>
           )
@@ -106,6 +119,7 @@ export default function StaffPage() {
                       {ROLE_LABELS[s.role]}
                       {!s.active && <Badge tone="red">No access</Badge>}
                       {s.active && !s.hasPin && ["cashier", "waiter"].includes(s.role) && <Badge tone="amber">No till PIN</Badge>}
+                      {s.active && s.deniedPermissions.length > 0 && <Badge tone="amber">Limited</Badge>}
                     </span>
                   </Td>
                   <Td className="hidden text-ink-soft md:table-cell">{s.storeIds.length ? s.storeIds.map(storeName).join(", ") : "All stores"}</Td>
@@ -116,7 +130,7 @@ export default function StaffPage() {
                         variant="ghost"
                         onClick={() => (
                           setError(null),
-                          setDraft({ id: s.id, email: s.email, fullName: s.fullName, password: "", role: s.role, pin: "", active: s.active, storeIds: s.storeIds })
+                          setDraft({ id: s.id, email: s.email, fullName: s.fullName, password: "", role: s.role, pin: "", active: s.active, storeIds: s.storeIds, deniedPermissions: s.deniedPermissions })
                         )}
                       >
                         Edit
@@ -195,6 +209,38 @@ export default function StaffPage() {
                 ))}
               </div>
             </fieldset>
+            {isOwner && draft.id && draft.role !== "owner" && rolePermissions.length > 0 && (
+              <fieldset className="sm:col-span-2">
+                <legend className="mb-1.5 text-sm font-medium">Permissions</legend>
+                <p className="mb-3 text-xs text-ink-soft">
+                  What a {ROLE_LABELS[draft.role].toLowerCase()} can do. Untick anything this person shouldn&apos;t do, on the web, the till or their phone.
+                </p>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {permissionGroups.map((group) => (
+                    <div key={group}>
+                      <p className="mb-1.5 text-xs font-medium uppercase tracking-wide text-ink-soft">{group}</p>
+                      <div className="flex flex-col gap-1.5">
+                        {rolePermissions
+                          .filter((p) => p.group === group)
+                          .map((p) => (
+                            <Checkbox
+                              key={p.key}
+                              label={p.label}
+                              checked={!draft.deniedPermissions.includes(p.key)}
+                              onChange={(e) =>
+                                setDraft({
+                                  ...draft,
+                                  deniedPermissions: e.target.checked ? draft.deniedPermissions.filter((k) => k !== p.key) : [...draft.deniedPermissions, p.key],
+                                })
+                              }
+                            />
+                          ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </fieldset>
+            )}
             {draft.id && (
               <div className="sm:col-span-2">
                 <Checkbox label="Can sign in" checked={draft.active} onChange={(e) => setDraft({ ...draft, active: e.target.checked })} />

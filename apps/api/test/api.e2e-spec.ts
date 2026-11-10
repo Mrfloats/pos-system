@@ -1668,3 +1668,147 @@ describe('wholesale and retail prices', () => {
     await http.patch(`/api/v1/price-lists/${wholesaleId}`).set(t).send({ active: true }).expect(200);
   });
 });
+
+describe('permissions and the audit trail', () => {
+  let ownerT: Record<string, string>;
+  let adminT2: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let adminId: string;
+  let ownerMembershipId: string;
+  let storeId: string;
+  let productId: string;
+  let variantId: string;
+  let saleId: string;
+  let lineId: string;
+  let today: string;
+  const mobile = { 'X-Floatly-Client': 'mobile/1.0.0' };
+
+  const staff = async (email: string, role: string) => {
+    const res = await http.post('/api/v1/staff').set(ownerT).send({ email, fullName: `Perm ${role}`, password: 'password123', role }).expect(201);
+    const login = await http.post('/api/v1/auth/login').send({ email, password: 'password123' }).expect(200);
+    return { id: res.body.id as string, t: auth(login.body.accessToken) };
+  };
+  const move = (t: Record<string, string>, type = 'adjustment') =>
+    http.post('/api/v1/inventory/movements').set(t).set(mobile).send({ storeId, type, note: 'Counted again', lines: [{ variantId, quantity: 1 }] });
+  const setPrice = (t: Record<string, string>, price: string) =>
+    http.patch(`/api/v1/products/${productId}`).set(t).set(mobile).send({ variants: [{ id: variantId, price }] });
+
+  beforeAll(async () => {
+    const o = await signup('Permission Shop', 'perms@example.com');
+    ownerT = auth(o.accessToken);
+    ownerMembershipId = o.membership.id;
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    today = (await http.get('/api/v1/accounting/periods').set(ownerT)).body.today;
+    const p = await http.post('/api/v1/products').set(ownerT).send({ name: 'Rice 2kg', variants: [{ price: '4.00', costPrice: '3.00' }] }).expect(201);
+    productId = p.body.id;
+    variantId = p.body.variants[0].id;
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId, quantity: 20 }] }).expect(201);
+    const sale = await http.post('/api/v1/sales').set(ownerT).send({ storeId, lines: [{ variantId, quantity: 2 }], payments: [{ method: 'cash', amount: '8' }] }).expect(201);
+    saleId = sale.body.id;
+    lineId = sale.body.lines[0].id;
+    const admin = await staff('perm-admin@example.com', 'admin');
+    adminId = admin.id;
+    adminT2 = admin.t;
+    cashierT = (await staff('perm-cashier@example.com', 'cashier')).t;
+  });
+
+  it('tells each person what they may do when they sign in', async () => {
+    const owner = await http.get('/api/v1/auth/me').set(ownerT).expect(200);
+    expect(owner.body.membership.permissions).toEqual(expect.arrayContaining(['inventory.adjust', 'returns.approve', 'audit.view', 'products.price']));
+    const cashier = await http.get('/api/v1/auth/me').set(cashierT).expect(200);
+    expect(cashier.body.membership.permissions).toEqual(expect.arrayContaining(['sales.view', 'customers.edit']));
+    for (const p of ['inventory.adjust', 'damaged.record', 'products.price', 'products.edit', 'returns.create', 'returns.approve', 'sales.void', 'reports.view', 'audit.view', 'dashboard.view']) {
+      expect(cashier.body.membership.permissions).not.toContain(p);
+    }
+  });
+
+  it('rejects a cashier on every admin endpoint', async () => {
+    await move(cashierT).expect(403);
+    await move(cashierT, 'waste').expect(403);
+    await http.post('/api/v1/inventory/transfers').set(cashierT).send({ fromStoreId: storeId, toStoreId: storeId, lines: [{ variantId, quantity: 1 }] }).expect(403);
+    await http.post('/api/v1/inventory/stock-takes').set(cashierT).send({ storeId, lines: [{ variantId, countedQuantity: 1 }] }).expect(403);
+    await setPrice(cashierT, '1.00').expect(403);
+    await http.post('/api/v1/products').set(cashierT).send({ name: 'X', variants: [{ price: 1 }] }).expect(403);
+    await http.delete(`/api/v1/products/${productId}`).set(cashierT).expect(403);
+    await http.put('/api/v1/store-prices').set(cashierT).send({ storeId, items: [{ variantId, price: '1.00' }] }).expect(403);
+    await http.post(`/api/v1/sales/${saleId}/returns`).set(cashierT).send({ lines: [{ lineId, quantity: 1 }], method: 'cash', reason: 'x' }).expect(403);
+    await http.post(`/api/v1/sales/${saleId}/void`).set(cashierT).expect(403);
+    await http.post('/api/v1/suppliers').set(cashierT).send({ name: 'Nobody Ltd' }).expect(403);
+    await http.get('/api/v1/sales/reports/daily').query({ from: today, to: today }).set(cashierT).expect(403);
+    await http.get('/api/v1/inventory/reports/valuation').set(cashierT).expect(403);
+    await http.get('/api/v1/audit-logs').set(cashierT).expect(403);
+    await http.get('/api/v1/staff').set(cashierT).expect(403);
+    await http.patch(`/api/v1/staff/${adminId}`).set(cashierT).send({ deniedPermissions: [] }).expect(403);
+    // Nothing changed.
+    const product = await http.get(`/api/v1/products/${productId}`).set(ownerT).expect(200);
+    expect(product.body.variants[0].price).toBe('4.00');
+  });
+
+  it('lets an admin do all of it', async () => {
+    await move(adminT2).expect(201);
+    await move(adminT2, 'waste').expect(201);
+    await setPrice(adminT2, '4.50').expect(200);
+    await http.get('/api/v1/sales/reports/daily').query({ from: today, to: today }).set(adminT2).expect(200);
+    await http.get('/api/v1/audit-logs').set(adminT2).expect(200);
+  });
+
+  it('lets only an owner take permissions away, and never from an owner', async () => {
+    const catalog = await http.get('/api/v1/staff/permissions').set(adminT2).expect(200);
+    expect(catalog.body.find((p: any) => p.key === 'inventory.adjust')).toMatchObject({ group: 'Stock', roles: expect.arrayContaining(['stock_clerk']) });
+    await http.patch(`/api/v1/staff/${adminId}`).set(adminT2).send({ deniedPermissions: [] }).expect(403);
+    await http.patch(`/api/v1/staff/${adminId}`).set(ownerT).send({ deniedPermissions: ['not.a.permission'] }).expect(400);
+    await http.patch(`/api/v1/staff/${ownerMembershipId}`).set(ownerT).send({ deniedPermissions: ['audit.view'] }).expect(400);
+    const res = await http.patch(`/api/v1/staff/${adminId}`).set(ownerT).send({ deniedPermissions: ['inventory.adjust', 'products.price', 'audit.view'] }).expect(200);
+    expect(res.body.deniedPermissions).toEqual(['inventory.adjust', 'products.price', 'audit.view']);
+    expect(res.body.permissions).not.toContain('inventory.adjust');
+    expect(res.body.permissions).toContain('damaged.record');
+  });
+
+  it('applies a removed permission at once, and leaves the rest', async () => {
+    await move(adminT2).expect(403);
+    await move(adminT2, 'waste').expect(201); // damaged stock is its own permission
+    await setPrice(adminT2, '9.99').expect(403);
+    await setPrice(adminT2, '4.50').expect(200); // same price: nothing to refuse
+    await http.patch(`/api/v1/products/${productId}`).set(adminT2).send({ name: 'Rice 2kg bag' }).expect(200);
+    await http.put('/api/v1/store-prices').set(adminT2).send({ storeId, items: [{ variantId, price: '9.99' }] }).expect(403);
+    await http.get('/api/v1/audit-logs').set(adminT2).expect(403);
+    const me = await http.get('/api/v1/auth/me').set(adminT2).expect(200);
+    expect(me.body.membership.permissions).not.toContain('products.price');
+    // Given back.
+    await http.patch(`/api/v1/staff/${adminId}`).set(ownerT).send({ deniedPermissions: [] }).expect(200);
+    await move(adminT2).expect(201);
+  });
+
+  it('records who, their role, the app, the store and the value before and after', async () => {
+    const prices = await http.get('/api/v1/audit-logs').query({ action: 'price_change' }).set(ownerT).expect(200);
+    expect(prices.body).toHaveLength(1);
+    expect(prices.body[0]).toMatchObject({
+      entity: 'Product',
+      entityId: productId,
+      role: 'admin',
+      platform: 'mobile',
+      userName: 'Perm admin',
+      oldValue: { [variantId]: '4.00' },
+      newValue: { [variantId]: '4.50' },
+    });
+
+    const adjustments = await http.get('/api/v1/audit-logs').query({ action: 'stock_adjustment', platform: 'mobile' }).set(ownerT).expect(200);
+    expect(adjustments.body).toHaveLength(2);
+    // Newest first. 20 received, 2 sold, +1, 1 wasted, 1 wasted: 17 before the last adjustment.
+    expect(adjustments.body[0]).toMatchObject({ role: 'admin', platform: 'mobile', storeId, storeName: 'Main Store', oldValue: { [variantId]: '17.000' }, newValue: { [variantId]: '18.000' } });
+    expect(adjustments.body[0].data).toMatchObject({ reason: 'Counted again' });
+
+    const waste = await http.get('/api/v1/audit-logs').query({ action: 'stock_waste', storeId }).set(ownerT).expect(200);
+    expect(waste.body).toHaveLength(2);
+
+    const perms = await http.get('/api/v1/audit-logs').query({ entity: 'Staff', action: 'update' }).set(ownerT).expect(200);
+    expect(perms.body.find((r: any) => r.newValue?.deniedPermissions?.length === 3)).toMatchObject({ role: 'owner', entityId: adminId });
+  });
+
+  it('refunds with the store and the reason in the trail', async () => {
+    await http.post(`/api/v1/sales/${saleId}/returns`).set(adminT2).set(mobile).send({ lines: [{ lineId, quantity: 1 }], method: 'cash', reason: 'Torn bag' }).expect(201);
+    const res = await http.get('/api/v1/audit-logs').query({ entity: 'Sale return' }).set(ownerT).expect(200);
+    expect(res.body[0]).toMatchObject({ action: 'create', role: 'admin', platform: 'mobile', storeId });
+    expect(res.body[0].data).toMatchObject({ reason: 'Torn bag' });
+  });
+});

@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Module, Param, Patch, Post, Qu
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AccountingModule } from '../accounting/accounting.module.js';
 import { type AuthContext, BOOKKEEPERS, Ctx, FRONT_OF_HOUSE, MANAGERS, Roles } from '../common/auth-context.js';
+import { Can } from '../common/permissions.js';
 import { IdParam } from '../organization/organization.dto.js';
 import { SalesOpsService, CustomerGroupsService } from './sales-ops.service.js';
 import { SalesReportsService } from './sales-reports.service.js';
@@ -41,6 +42,7 @@ export class SalesController {
   ) {}
 
   @Roles(...FRONT_OF_HOUSE, 'accountant')
+  @Can('sales.view')
   @Get()
   list(@Ctx() ctx: AuthContext, @Query() q: SaleQuery) {
     return this.svc.list(ctx, q);
@@ -53,6 +55,7 @@ export class SalesController {
   }
 
   @Roles(...FRONT_OF_HOUSE, 'accountant')
+  @Can('sales.view')
   @Get(':id')
   get(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.svc.get(ctx, p.id);
@@ -91,12 +94,14 @@ export class SalesController {
 
   /** Refunds need a manager, so a cashier can't refund their own sales unchecked. */
   @Roles(...MANAGERS)
+  @Can('returns.create')
   @Post(':id/returns')
   createReturn(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: CreateReturnDto) {
     return this.svc.createReturn(ctx, p.id, dto);
   }
 
   @Roles(...MANAGERS)
+  @Can('sales.void')
   @Post(':id/void')
   void(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.svc.voidSale(ctx, p.id);
@@ -118,6 +123,7 @@ export class SalesController {
 @ApiTags('sales')
 @ApiBearerAuth()
 @Roles(...REPORT_READERS)
+@Can('reports.view')
 @Controller('sales/reports')
 export class SalesReportsController {
   constructor(private readonly svc: SalesReportsService) {}

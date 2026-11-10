@@ -1,6 +1,7 @@
 import { Body, Controller, Delete, Get, Param, Patch, Post, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { ACCOUNTANTS, type AuthContext, BOOKKEEPERS, Ctx, Roles } from '../common/auth-context.js';
+import { Can } from '../common/permissions.js';
 import { ListQuery } from '../common/validation.js';
 import { IdParam } from '../organization/organization.dto.js';
 import {
@@ -33,23 +34,27 @@ import { ReportsService } from './reports.service.js';
 export class SuppliersController {
   constructor(private readonly svc: SuppliersService) {}
 
+  @Can('suppliers.view')
   @Get()
   list(@Ctx() ctx: AuthContext, @Query() q: ListQuery) {
     return this.svc.page(ctx, q);
   }
 
+  @Can('suppliers.view')
   @Get(':id')
   get(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.svc.get(ctx, p.id);
   }
 
   @Roles(...BOOKKEEPERS)
+  @Can('suppliers.edit')
   @Post()
   create(@Ctx() ctx: AuthContext, @Body() dto: CreateSupplierDto) {
     return this.svc.create(ctx, dto);
   }
 
   @Roles(...BOOKKEEPERS)
+  @Can('suppliers.edit')
   @Patch(':id')
   update(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: UpdateSupplierDto) {
     return this.svc.update(ctx, p.id, dto);
@@ -57,6 +62,7 @@ export class SuppliersController {
 
   /** Suppliers with bills are kept for the records, so this switches them off. */
   @Roles(...BOOKKEEPERS)
+  @Can('suppliers.edit')
   @Delete(':id')
   deactivate(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.svc.update(ctx, p.id, { active: false });

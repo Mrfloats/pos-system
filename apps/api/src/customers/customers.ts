@@ -4,6 +4,7 @@ import { IsBoolean, IsEmail, IsOptional, IsString, IsUUID, Length, MaxLength } f
 import { asc, count, ilike, or, SQL } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext, Ctx, FRONT_OF_HOUSE, MANAGERS, Roles } from '../common/auth-context.js';
+import { Can } from '../common/permissions.js';
 import { assertOwned } from '../common/ownership.js';
 import { TenantCrud } from '../common/tenant-crud.js';
 import { IsMoney, likeEscape, ListQuery, Page, ToDecimalString, Trim } from '../common/validation.js';
@@ -80,11 +81,13 @@ export class CustomersService extends TenantCrud<typeof customers> {
 export class CustomersController {
   constructor(private readonly svc: CustomersService) {}
 
+  @Can('customers.view')
   @Get()
   list(@Ctx() ctx: AuthContext, @Query() q: ListQuery) {
     return this.svc.page(ctx, q);
   }
 
+  @Can('customers.view')
   @Get(':id')
   get(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.svc.get(ctx, p.id);
@@ -92,18 +95,21 @@ export class CustomersController {
 
   /** Cashiers can add customers at the till (e.g. buyer details for a tax invoice). */
   @Roles(...FRONT_OF_HOUSE)
+  @Can('customers.edit')
   @Post()
   create(@Ctx() ctx: AuthContext, @Body() dto: CreateCustomerDto) {
     return this.svc.create(ctx, dto);
   }
 
   @Roles(...FRONT_OF_HOUSE)
+  @Can('customers.edit')
   @Patch(':id')
   update(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: UpdateCustomerDto) {
     return this.svc.update(ctx, p.id, dto);
   }
 
   @Roles(...MANAGERS)
+  @Can('customers.edit')
   @Delete(':id')
   deactivate(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
     return this.svc.deactivate(ctx, p.id);

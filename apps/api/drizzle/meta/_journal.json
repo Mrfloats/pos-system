@@ -120,6 +120,13 @@
       "when": 1793101895270,
       "tag": "0016_pack_list_prices",
       "breakpoints": true
+    },
+    {
+      "idx": 17,
+      "version": "7",
+      "when": 1794301976373,
+      "tag": "0017_permissions_and_audit",
+      "breakpoints": true
     }
   ]
 }

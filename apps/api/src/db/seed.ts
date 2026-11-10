@@ -15,6 +15,7 @@ import { AuthService } from '../auth/auth.service.js';
 import { ProductsService } from '../catalog/products.service.js';
 import { CategoriesService, ModifierGroupsService } from '../catalog/settings.service.js';
 import type { AuthContext } from '../common/auth-context.js';
+import { rolePermissions } from '../common/permissions.js';
 import { InventoryService } from '../inventory/inventory.js';
 import { StaffService, StoresService } from '../organization/organization.service.js';
 import { DbService } from './db.service.js';
@@ -55,6 +56,8 @@ async function main() {
     userId: shop.user.id,
     membershipId: shop.membership.id,
     role: 'owner',
+    permissions: new Set(rolePermissions('owner')),
+    platform: 'web',
   };
   const [main] = await storesSvc.list(ctx);
   await storesSvc.create(ctx, { name: 'Central Warehouse', code: 'WH', type: 'warehouse' });
@@ -156,6 +159,8 @@ async function main() {
     userId: grill.user.id,
     membershipId: grill.membership.id,
     role: 'owner',
+    permissions: new Set(rolePermissions('owner')),
+    platform: 'web',
   };
   // The demo owner also gets access to the restaurant, so they can switch businesses.
   await staff.create(gctx, { email: EMAIL, fullName: 'Demo Owner', role: 'owner' });

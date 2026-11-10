@@ -12,11 +12,13 @@ import { JwtService } from '@nestjs/jwt';
 import { and, eq, sql } from 'drizzle-orm';
 import { DbService } from '../db/db.service.js';
 import { memberships, tenants, users } from '../db/schema.js';
-import { ALLOW_LAPSED, type AuthContext, DEVICE_REVOKED, GRACE_DAYS, IS_PLATFORM, IS_PUBLIC, JwtPayload, PlatformJwtPayload, Role, ROLES } from './auth-context.js';
+import { ALLOW_LAPSED, type AuthContext, CLIENT_HEADER, DEVICE_REVOKED, GRACE_DAYS, IS_PLATFORM, IS_PUBLIC, JwtPayload, platformOf, PlatformJwtPayload, Role, ROLES } from './auth-context.js';
+import { effectivePermissions, NOT_PERMITTED, type Permission, PERMISSIONS_META } from './permissions.js';
 
 /**
  * Global guard: verifies the bearer token, then re-reads the membership so a
- * deactivated staff member or a changed role takes effect immediately.
+ * deactivated staff member, a changed role or a removed permission takes effect
+ * immediately.
  */
 @Injectable()
 export class AuthGuard implements CanActivate {
@@ -66,6 +68,7 @@ export class AuthGuard implements CanActivate {
             id: memberships.id,
             role: memberships.role,
             active: memberships.active,
+            denied: memberships.deniedPermissions,
             status: tenants.subscriptionStatus,
             // Past the paid-up date plus the grace days.
             lapsed: sql<boolean>`coalesce(current_date > ${tenants.currentPeriodEnd} + ${GRACE_DAYS}::int, false)`,
@@ -110,6 +113,8 @@ export class AuthGuard implements CanActivate {
       tenantId: payload.tid,
       membershipId: membership.id,
       role: membership.role,
+      permissions: new Set(effectivePermissions(membership.role, membership.denied)),
+      platform: platformOf(request.headers[CLIENT_HEADER]),
       deviceId: payload.did,
     };
     request.auth = auth;
@@ -118,6 +123,8 @@ export class AuthGuard implements CanActivate {
     if (allowed && !allowed.includes(auth.role)) {
       throw new ForbiddenException('Your role cannot do this');
     }
+    const needed = this.reflector.getAllAndOverride<Permission[] | undefined>(PERMISSIONS_META, targets);
+    if (needed?.some((p) => !auth.permissions.has(p))) throw new ForbiddenException(NOT_PERMITTED);
     return true;
   }
 }
