@@ -3,6 +3,7 @@ import { and, asc, count, eq, exists, ilike, inArray, isNull, or, sql, SQL } fro
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext } from '../common/auth-context.js';
 import { assertOwned } from '../common/ownership.js';
+import { assertPinConfirmed } from '../common/lockout.js';
 import { assertCan } from '../common/permissions.js';
 import { found, likeEscape, Page } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
@@ -199,7 +200,10 @@ export class ProductsService {
         const was = current.find((c) => c.id === v.id);
         return was && Number(was.price) !== Number(v.price) ? [{ variantId: was.id, name: was.name, old: was.price, new: v.price }] : [];
       });
-      if (priceChanges.length) assertCan(ctx, 'products.price');
+      if (priceChanges.length) {
+        assertCan(ctx, 'products.price');
+        assertPinConfirmed(ctx);
+      }
       if (Object.keys(fields).length) {
         await tx.update(products).set(fields).where(eq(products.id, id));
       }

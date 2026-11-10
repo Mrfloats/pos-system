@@ -2,6 +2,7 @@ import { Body, Controller, Delete, Get, HttpCode, Module, Param, Patch, Post, Qu
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AccountingModule } from '../accounting/accounting.module.js';
 import { type AuthContext, BOOKKEEPERS, Ctx, FRONT_OF_HOUSE, MANAGERS, Roles } from '../common/auth-context.js';
+import { assertPinConfirmed } from '../common/lockout.js';
 import { Can } from '../common/permissions.js';
 import { IdParam } from '../organization/organization.dto.js';
 import { SalesOpsService, CustomerGroupsService } from './sales-ops.service.js';
@@ -97,6 +98,7 @@ export class SalesController {
   @Can('returns.create')
   @Post(':id/returns')
   createReturn(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: CreateReturnDto) {
+    assertPinConfirmed(ctx);
     return this.svc.createReturn(ctx, p.id, dto);
   }
 
@@ -104,6 +106,7 @@ export class SalesController {
   @Can('sales.void')
   @Post(':id/void')
   void(@Ctx() ctx: AuthContext, @Param() p: IdParam) {
+    assertPinConfirmed(ctx);
     return this.svc.voidSale(ctx, p.id);
   }
 

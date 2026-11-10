@@ -3,6 +3,7 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsString, Length } from 'class-validator';
 import { eq } from 'drizzle-orm';
 import { ADMINS, ALL_ROLES, type AuthContext, Ctx, MANAGERS, Roles } from '../common/auth-context.js';
+import { assertPinConfirmed } from '../common/lockout.js';
 import { Can } from '../common/permissions.js';
 import { categories } from '../db/schema.js';
 import { IdParam } from '../organization/organization.dto.js';
@@ -244,6 +245,7 @@ export class PriceListsController {
   @Can('products.price')
   @Put(':id/items')
   setItems(@Ctx() ctx: AuthContext, @Param() p: IdParam, @Body() dto: SetPriceListItemsDto) {
+    assertPinConfirmed(ctx);
     return this.svc.setItems(ctx, p.id, dto);
   }
 }

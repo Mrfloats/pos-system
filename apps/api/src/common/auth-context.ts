@@ -33,7 +33,15 @@ export interface AuthContext {
   platform: Platform;
   /** Set when signed in on a till with a PIN. */
   deviceId?: string;
+  /** Signed in on a phone (a refreshable session): sensitive actions need the PIN again. */
+  mobileSession: boolean;
+  hasPin: boolean;
+  /** This request carried the person's PIN (X-Floatly-Pin) and it was right. */
+  pinConfirmed: boolean;
 }
+
+/** Sent with a sensitive request to confirm it with the person's PIN. */
+export const PIN_HEADER = 'x-floatly-pin';
 
 /** Contents of the access token. */
 export interface JwtPayload {
@@ -43,6 +51,8 @@ export interface JwtPayload {
   /** Signed in on a till: its device id, and the start of its secret's hash, so switching the till off or pairing it again ends the session. */
   did?: string;
   dfp?: string;
+  /** Signed in on a phone, with a refresh token. */
+  plt?: 'mobile';
 }
 
 /** Sent with 401s when the till itself was switched off or set up again elsewhere, so the app can stop. */
@@ -51,6 +61,16 @@ export const DEVICE_REVOKED = 'device_revoked';
 /** Role groups used by @Roles() on endpoints. */
 export const ADMINS: Role[] = ['owner', 'admin'];
 export const MANAGERS: Role[] = [...ADMINS, 'manager'];
+/** Start of each role's staff ID: ADM-001, CSH-014… */
+export const STAFF_CODE_PREFIX: Record<Role, string> = {
+  owner: 'OWN',
+  admin: 'ADM',
+  manager: 'MGR',
+  cashier: 'CSH',
+  waiter: 'WTR',
+  stock_clerk: 'STK',
+  accountant: 'ACC',
+};
 export const STOCK_WRITERS: Role[] = [...MANAGERS, 'stock_clerk'];
 export const FRONT_OF_HOUSE: Role[] = [...MANAGERS, 'cashier', 'waiter'];
 /** Enter bills, invoices, payments and expenses, and read the reports. */

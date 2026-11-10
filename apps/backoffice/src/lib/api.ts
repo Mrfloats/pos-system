@@ -154,7 +154,7 @@ export interface Session {
   accessToken?: string;
   user: { id: string; email: string; fullName: string; phone: string | null };
   tenant: Tenant;
-  membership: { id: string; role: Role; permissions: string[] };
+  membership: { id: string; role: Role; staffCode: string; hasPin: boolean; permissions: string[] };
   businesses: { tenantId: string; name: string; businessType: BusinessType; role: Role }[];
 }
 
@@ -303,6 +303,8 @@ export interface StaffMember {
   email: string;
   fullName: string;
   role: Role;
+  /** Short ID, e.g. ADM-001. */
+  staffCode: string;
   active: boolean;
   hasPin: boolean;
   lastLoginAt: string | null;

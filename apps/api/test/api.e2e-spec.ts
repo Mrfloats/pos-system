@@ -1812,3 +1812,182 @@ describe('permissions and the audit trail', () => {
     expect(res.body[0].data).toMatchObject({ reason: 'Torn bag' });
   });
 });
+
+describe('phone sign-in, lockout and PIN confirmation', () => {
+  let ownerT: Record<string, string>;
+  let storeId: string;
+  let productId: string;
+  let variantId: string;
+  let saleId: string;
+  let lineId: string;
+  const L = '/api/v1/auth/login';
+  const R = '/api/v1/auth/refresh';
+  const pin = (p: string) => ({ 'X-Floatly-Pin': p });
+
+  const phone = async (email: string) => (await http.post(L).send({ email, password: 'password123', session: 'mobile' }).expect(200)).body;
+  const setPrice = (t: Record<string, string>, price: string) => http.patch(`/api/v1/products/${productId}`).set(t).send({ variants: [{ id: variantId, price }] });
+  const sql = async (text: string, values: unknown[] = []) => {
+    const db = ownerDb();
+    try {
+      return await db.query(text, values);
+    } finally {
+      await db.end();
+    }
+  };
+
+  beforeAll(async () => {
+    const o = await signup('Phone Shop', 'phone@example.com');
+    ownerT = auth(o.accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    const p = await http.post('/api/v1/products').set(ownerT).send({ name: 'Flour 2kg', variants: [{ price: '2.00', costPrice: '1.50' }] }).expect(201);
+    productId = p.body.id;
+    variantId = p.body.variants[0].id;
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId, quantity: 10 }] }).expect(201);
+    const sale = await http.post('/api/v1/sales').set(ownerT).send({ storeId, lines: [{ variantId, quantity: 2 }], payments: [{ method: 'cash', amount: '4' }] }).expect(201);
+    saleId = sale.body.id;
+    lineId = sale.body.lines[0].id;
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'phone-admin@example.com', fullName: 'Phone Admin', password: 'password123', role: 'admin', pin: '4321' }).expect(201);
+  });
+
+  it('gives everyone a short staff ID, numbered per role', async () => {
+    const me = await http.get('/api/v1/auth/me').set(ownerT).expect(200);
+    expect(me.body.membership).toMatchObject({ staffCode: 'OWN-001', hasPin: false });
+    const second = await http.post('/api/v1/staff').set(ownerT).send({ email: 'phone-admin2@example.com', fullName: 'Second Admin', password: 'password123', role: 'admin' }).expect(201);
+    expect(second.body.staffCode).toBe('ADM-002');
+    const list = await http.get('/api/v1/staff').set(ownerT).expect(200);
+    expect(list.body.map((s: any) => s.staffCode).sort()).toEqual(['ADM-001', 'ADM-002', 'OWN-001']);
+    // The ID stays when the role changes.
+    const moved = await http.patch(`/api/v1/staff/${second.body.id}`).set(ownerT).send({ role: 'manager' }).expect(200);
+    expect(moved.body.staffCode).toBe('ADM-002');
+  });
+
+  it('signs a phone in with a refresh token, and the backoffice without one', async () => {
+    const web = await http.post(L).send({ email: 'phone-admin@example.com', password: 'password123' }).expect(200);
+    expect(web.body.refreshToken).toBeUndefined();
+    const s = await phone('phone-admin@example.com');
+    expect(s.refreshToken).toMatch(/^rt_/);
+    expect(s.expiresIn).toBe(900);
+    expect(s.membership).toMatchObject({ role: 'admin', staffCode: 'ADM-001', hasPin: true });
+    await http.get('/api/v1/auth/me').set(auth(s.accessToken)).expect(200);
+    // Only its hash is kept.
+    const stored = await sql('SELECT token_hash FROM refresh_tokens');
+    expect(stored.rows.some((r: any) => r.token_hash === s.refreshToken)).toBe(false);
+  });
+
+  it('swaps the refresh token each time, forgiving a quick repeat', async () => {
+    const s = await phone('phone-admin@example.com');
+    const next = await http.post(R).send({ refreshToken: s.refreshToken }).expect(200);
+    expect(next.body.refreshToken).toMatch(/^rt_/);
+    expect(next.body.refreshToken).not.toBe(s.refreshToken);
+    await http.get('/api/v1/products').set(auth(next.body.accessToken)).expect(200);
+    // The phone missed the answer and asks again straight away.
+    await http.post(R).send({ refreshToken: s.refreshToken }).expect(200);
+    await http.post(R).send({ refreshToken: 'rt_' + 'x'.repeat(43) }).expect(401);
+    await http.post(R).send({ refreshToken: 'nonsense' }).expect(400);
+  });
+
+  it('ends the whole sign-in when an old refresh token turns up later', async () => {
+    const s = await phone('phone-admin@example.com');
+    const next = await http.post(R).send({ refreshToken: s.refreshToken }).expect(200);
+    await sql(`UPDATE refresh_tokens SET used_at = now() - interval '5 minutes' WHERE used_at IS NOT NULL`);
+    await http.post(R).send({ refreshToken: s.refreshToken }).expect(401); // the copy
+    await http.post(R).send({ refreshToken: next.body.refreshToken }).expect(401); // and the real phone must sign in again
+  });
+
+  it('ends a sign-in on logout, when it goes unused, or when the person loses access', async () => {
+    const a = await phone('phone-admin@example.com');
+    await http.post('/api/v1/auth/logout').send({ refreshToken: a.refreshToken }).expect(200);
+    await http.post(R).send({ refreshToken: a.refreshToken }).expect(401);
+
+    const b = await phone('phone-admin@example.com');
+    await sql(`UPDATE refresh_tokens SET expires_at = now() - interval '1 minute' WHERE revoked_at IS NULL AND used_at IS NULL`);
+    await http.post(R).send({ refreshToken: b.refreshToken }).expect(401);
+
+    const c = await phone('phone-admin2@example.com');
+    const staff = await http.get('/api/v1/staff').set(ownerT).expect(200);
+    const id = staff.body.find((m: any) => m.email === 'phone-admin2@example.com').id;
+    await http.patch(`/api/v1/staff/${id}`).set(ownerT).send({ active: false }).expect(200);
+    await http.post(R).send({ refreshToken: c.refreshToken }).expect(401);
+  });
+
+  it("won't refresh into a business the person doesn't belong to", async () => {
+    const other = await signup('Someone Else', 'someone-else@example.com');
+    const s = await phone('phone-admin@example.com');
+    await http.post(R).send({ refreshToken: s.refreshToken, tenantId: other.tenant.id }).expect(401);
+    await http.post('/api/v1/auth/switch-tenant').set(auth(s.accessToken)).send({ tenantId: other.tenant.id }).expect(403);
+  });
+
+  it('asks for the PIN again before a price change or refund from a phone', async () => {
+    const s = await phone('phone-admin@example.com');
+    const t = auth(s.accessToken);
+    const none = await setPrice(t, '2.10').expect(403);
+    expect(none.body.code).toBe('pin_required');
+    const wrong = await setPrice(t, '2.10').set(pin('0000')).expect(403);
+    expect(wrong.body.code).toBe('wrong_pin');
+    await setPrice(t, '2.10').set(pin('4321')).expect(200);
+    // Other edits don't need it.
+    await http.patch(`/api/v1/products/${productId}`).set(t).send({ name: 'Flour 2kg bag' }).expect(200);
+    await http.put('/api/v1/store-prices').set(t).send({ storeId, items: [{ variantId, price: '2.20' }] }).expect(403);
+    await http.put('/api/v1/store-prices').set(t).set(pin('4321')).send({ storeId, items: [{ variantId, price: null }] }).expect(200);
+
+    const refund = { lines: [{ lineId, quantity: 1 }], method: 'cash', reason: 'Weevils' };
+    expect((await http.post(`/api/v1/sales/${saleId}/returns`).set(t).send(refund).expect(403)).body.code).toBe('pin_required');
+    const ret = await http.post(`/api/v1/sales/${saleId}/returns`).set(t).set(pin('4321')).send(refund).expect(201);
+    await http.post(`/api/v1/sales/${ret.body.id}/void`).set(t).expect(403);
+    await http.post(`/api/v1/sales/${ret.body.id}/void`).set(t).set(pin('4321')).expect(201);
+
+    await http.post('/api/v1/auth/verify-pin').set(t).set(pin('4321')).expect(200);
+    await http.post('/api/v1/auth/verify-pin').set(t).expect(400);
+
+    // The audit trail says it was a phone, without being told.
+    const trail = await http.get('/api/v1/audit-logs').query({ action: 'price_change' }).set(ownerT).expect(200);
+    expect(trail.body[0]).toMatchObject({ platform: 'mobile', role: 'admin', oldValue: { [variantId]: '2.00' }, newValue: { [variantId]: '2.10' } });
+  });
+
+  it("doesn't ask the backoffice for a PIN", async () => {
+    const web = await http.post(L).send({ email: 'phone-admin@example.com', password: 'password123' }).expect(200);
+    await setPrice(auth(web.body.accessToken), '2.30').expect(200);
+  });
+
+  it('lets someone choose their own PIN with their password', async () => {
+    const s = await phone('phone@example.com');
+    const t = auth(s.accessToken);
+    expect((await setPrice(t, '2.40').expect(403)).body.code).toBe('pin_not_set');
+    expect((await http.post('/api/v1/auth/verify-pin').set(t).set(pin('1111')).expect(403)).body.code).toBe('pin_not_set');
+    await http.post('/api/v1/auth/pin').set(t).send({ password: 'wrong-password', pin: '9876' }).expect(400);
+    await http.post('/api/v1/auth/pin').set(t).send({ password: 'password123', pin: '4321' }).expect(409); // the admin's
+    await http.post('/api/v1/auth/pin').set(t).send({ password: 'password123', pin: '98' }).expect(400);
+    await http.post('/api/v1/auth/pin').set(t).send({ password: 'password123', pin: '9876' }).expect(200);
+    await setPrice(t, '2.40').set(pin('9876')).expect(200);
+    expect((await http.get('/api/v1/auth/me').set(t).expect(200)).body.membership.hasPin).toBe(true);
+  });
+
+  it('locks an account after five wrong passwords, even for the right one', async () => {
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'lockme@example.com', fullName: 'Lock Me', password: 'password123', role: 'cashier' }).expect(201);
+    const attempt = (password: string) => http.post(L).send({ email: 'lockme@example.com', password });
+    for (let i = 0; i < 4; i++) await attempt('wrong-password').expect(401);
+    // A right password before the limit starts the count again.
+    await attempt('password123').expect(200);
+    for (let i = 0; i < 4; i++) await attempt('wrong-password').expect(401);
+    const fifth = await attempt('wrong-password').expect(429);
+    expect(fifth.body).toMatchObject({ code: 'account_locked' });
+    expect(fifth.body.message).toMatch(/locked for 15 more minutes/);
+    await attempt('password123').expect(429);
+    // An unknown email gives nothing away and is never "locked".
+    for (let i = 0; i < 6; i++) await http.post(L).send({ email: 'nobody-here@example.com', password: 'wrong-password' }).expect(401);
+    // Time passes.
+    await sql(`UPDATE users SET locked_until = now() - interval '1 second' WHERE email = 'lockme@example.com'`);
+    await attempt('password123').expect(200);
+  });
+
+  it('counts wrong PINs towards the lock too', async () => {
+    const s = await phone('phone-admin@example.com');
+    const t = auth(s.accessToken);
+    for (let i = 0; i < 4; i++) await setPrice(t, '5.00').set(pin('0000')).expect(403);
+    await setPrice(t, '5.00').set(pin('0000')).expect(429);
+    await setPrice(t, '5.00').set(pin('4321')).expect(429);
+    await http.post(L).send({ email: 'phone-admin@example.com', password: 'password123' }).expect(429);
+    await sql(`UPDATE users SET locked_until = NULL WHERE email = 'phone-admin@example.com'`);
+    await setPrice(t, '5.00').set(pin('4321')).expect(200);
+  });
+});

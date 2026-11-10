@@ -58,6 +58,9 @@ async function main() {
     role: 'owner',
     permissions: new Set(rolePermissions('owner')),
     platform: 'web',
+    mobileSession: false,
+    hasPin: false,
+    pinConfirmed: false,
   };
   const [main] = await storesSvc.list(ctx);
   await storesSvc.create(ctx, { name: 'Central Warehouse', code: 'WH', type: 'warehouse' });
@@ -161,6 +164,9 @@ async function main() {
     role: 'owner',
     permissions: new Set(rolePermissions('owner')),
     platform: 'web',
+    mobileSession: false,
+    hasPin: false,
+    pinConfirmed: false,
   };
   // The demo owner also gets access to the restaurant, so they can switch businesses.
   await staff.create(gctx, { email: EMAIL, fullName: 'Demo Owner', role: 'owner' });

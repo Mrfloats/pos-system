@@ -1,8 +1,9 @@
-import { Body, Controller, ForbiddenException, Get, HttpCode, Post } from '@nestjs/common';
+import { BadRequestException, Body, Controller, ForbiddenException, Get, HttpCode, Post } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AllowLapsed, type AuthContext, Ctx, Public } from '../common/auth-context.js';
+import { PIN_NOT_SET } from '../common/lockout.js';
 import { type Limit, RateLimit } from '../common/rate-limit.js';
-import { ChangePasswordDto, LoginDto, SignupRequestDto, SwitchTenantDto, TillSignInDto } from './auth.dto.js';
+import { ChangePasswordDto, LoginDto, LogoutDto, RefreshDto, SetPinDto, SignupRequestDto, SwitchTenantDto, TillSignInDto } from './auth.dto.js';
 import { AuthService } from './auth.service.js';
 
 /** Sign-up and sign-in attempts per minute from one address (raised only by the test suite). */
@@ -38,6 +39,23 @@ export class AuthController {
     return this.auth.login(dto);
   }
 
+  /** Phone app: swap the refresh token for a new access token and a new refresh token. The old one stops working. */
+  @Public()
+  @RateLimit(TILL_LIMIT)
+  @HttpCode(200)
+  @Post('refresh')
+  refresh(@Body() dto: RefreshDto) {
+    return this.auth.refresh(dto);
+  }
+
+  /** Phone app: end the sign-in, so its refresh token can't be used again. */
+  @Public()
+  @HttpCode(200)
+  @Post('logout')
+  logout(@Body() dto: LogoutDto) {
+    return this.auth.logout(dto);
+  }
+
   /** Sign in on a paired till with a staff member's PIN. */
   @Public()
   @RateLimit(TILL_LIMIT)
@@ -54,6 +72,30 @@ export class AuthController {
     return this.auth.me(ctx);
   }
 
+  /**
+   * Checks the PIN sent in X-Floatly-Pin (the auth guard has already compared it;
+   * wrong PINs never get here). The phone app uses it to unlock after a pause.
+   */
+  @ApiBearerAuth()
+  @HttpCode(200)
+  @AllowLapsed()
+  @Post('verify-pin')
+  verifyPin(@Ctx() ctx: AuthContext) {
+    if (!ctx.hasPin) throw new ForbiddenException({ statusCode: 403, code: PIN_NOT_SET, message: 'Set a PIN for yourself first' });
+    if (!ctx.pinConfirmed) throw new BadRequestException('Send your PIN to check it');
+    return { ok: true };
+  }
+
+  /** Choose (or change) your own PIN, proven with your password. */
+  @ApiBearerAuth()
+  @RateLimit(AUTH_LIMIT)
+  @HttpCode(200)
+  @Post('pin')
+  setPin(@Ctx() ctx: AuthContext, @Body() dto: SetPinDto) {
+    if (ctx.deviceId) throw new ForbiddenException('Change your PIN in the backoffice or the phone app, not on a till');
+    return this.auth.setPin(ctx, dto);
+  }
+
   /** Get a new token for another business the user belongs to. */
   @ApiBearerAuth()
   @HttpCode(200)
@@ -62,6 +104,8 @@ export class AuthController {
   switchTenant(@Ctx() ctx: AuthContext, @Body() dto: SwitchTenantDto) {
     // A till session is tied to its till; swapping it for an ordinary one would outlive switching the till off.
     if (ctx.deviceId) throw new ForbiddenException('Switch business in the backoffice, not on a till');
+    // A phone session switches with its refresh token (POST /auth/refresh), so the new session can be refreshed too.
+    if (ctx.mobileSession) throw new ForbiddenException('Switch business with your refresh token');
     return this.auth.switchTenant(ctx.userId, dto.tenantId);
   }
 

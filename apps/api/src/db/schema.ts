@@ -190,6 +190,9 @@ export const users = pgTable('users', {
   fullName: text('full_name').notNull(),
   phone: text('phone'),
   lastLoginAt: timestamp('last_login_at', { withTimezone: true }),
+  /** Wrong passwords or PINs in a row. Enough of them lock the account for a while (common/lockout.ts). */
+  failedLogins: integer('failed_logins').notNull().default(0),
+  lockedUntil: timestamp('locked_until', { withTimezone: true }),
   /** Floatly staff who can see every business in the platform console. Granted with `npm run platform:admin`. */
   isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
   createdAt: createdAt(),
@@ -205,7 +208,9 @@ export const memberships = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     role: memberRole('role').notNull(),
-    /** Hashed 4–6 digit PIN for quick sign-in on a till. */
+    /** Short ID shown beside the person's name, e.g. ADM-001. Given when they join and kept if their role changes. */
+    staffCode: text('staff_code').notNull(),
+    /** Hashed 4–6 digit PIN for quick sign-in on a till, and for confirming sensitive actions on a phone. */
     pinHash: text('pin_hash'),
     /** Permissions an owner took away from this person (see common/permissions.ts). Their role gives the rest. */
     deniedPermissions: text('denied_permissions').array().notNull().default(sql`'{}'::text[]`),
@@ -215,6 +220,7 @@ export const memberships = pgTable(
   },
   (t) => [
     uniqueIndex('memberships_tenant_user_uq').on(t.tenantId, t.userId),
+    uniqueIndex('memberships_tenant_code_uq').on(t.tenantId, t.staffCode),
     index('memberships_user_idx').on(t.userId),
     tenantIsolation(t),
     // At sign-in (no active tenant) a user may read their own memberships across tenants
@@ -226,6 +232,34 @@ export const memberships = pgTable(
       using: sql`${currentTenant} IS NULL AND ${t.userId} = ${currentUser}`,
     }),
   ],
+);
+
+/**
+ * Long-lived sign-ins on phones. The app holds the token in the phone's
+ * keychain and swaps it for a short-lived access token; each swap replaces it
+ * (rotation). Only a hash is stored. A token used again long after it was
+ * replaced means it was copied, so the whole sign-in (family) is ended.
+ * Looked up before any business is chosen, so like users it has no tenant policy.
+ */
+export const refreshTokens = pgTable(
+  'refresh_tokens',
+  {
+    id: id(),
+    /** Every token descended from one sign-in. */
+    familyId: uuid('family_id').notNull(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tenantId: tenantId(),
+    tokenHash: text('token_hash').notNull().unique(),
+    /** Unused for this long, the sign-in ends. */
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    /** When it was swapped for the next one. */
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    revokedAt: timestamp('revoked_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('refresh_tokens_family_idx').on(t.familyId), index('refresh_tokens_user_idx').on(t.userId)],
 );
 
 export const stores = pgTable(

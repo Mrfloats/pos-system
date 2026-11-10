@@ -127,6 +127,13 @@
       "when": 1794301976373,
       "tag": "0017_permissions_and_audit",
       "breakpoints": true
+    },
+    {
+      "idx": 18,
+      "version": "7",
+      "when": 1794303376725,
+      "tag": "0018_mobile_sessions",
+      "breakpoints": true
     }
   ]
 }

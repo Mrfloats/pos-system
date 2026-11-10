@@ -12,7 +12,8 @@ import { JwtService } from '@nestjs/jwt';
 import { and, eq, sql } from 'drizzle-orm';
 import { DbService } from '../db/db.service.js';
 import { memberships, tenants, users } from '../db/schema.js';
-import { ALLOW_LAPSED, type AuthContext, CLIENT_HEADER, DEVICE_REVOKED, GRACE_DAYS, IS_PLATFORM, IS_PUBLIC, JwtPayload, platformOf, PlatformJwtPayload, Role, ROLES } from './auth-context.js';
+import { ALLOW_LAPSED, type AuthContext, CLIENT_HEADER, DEVICE_REVOKED, PIN_HEADER, GRACE_DAYS, IS_PLATFORM, IS_PUBLIC, JwtPayload, platformOf, PlatformJwtPayload, Role, ROLES } from './auth-context.js';
+import { confirmPin } from './lockout.js';
 import { effectivePermissions, NOT_PERMITTED, type Permission, PERMISSIONS_META } from './permissions.js';
 
 /**
@@ -69,6 +70,7 @@ export class AuthGuard implements CanActivate {
             role: memberships.role,
             active: memberships.active,
             denied: memberships.deniedPermissions,
+            hasPin: sql<boolean>`${memberships.pinHash} IS NOT NULL`,
             status: tenants.subscriptionStatus,
             // Past the paid-up date plus the grace days.
             lapsed: sql<boolean>`coalesce(current_date > ${tenants.currentPeriodEnd} + ${GRACE_DAYS}::int, false)`,
@@ -114,9 +116,21 @@ export class AuthGuard implements CanActivate {
       membershipId: membership.id,
       role: membership.role,
       permissions: new Set(effectivePermissions(membership.role, membership.denied)),
-      platform: platformOf(request.headers[CLIENT_HEADER]),
+      // A phone session is always "mobile", whatever the app says about itself.
+      platform: payload.plt ?? platformOf(request.headers[CLIENT_HEADER]),
       deviceId: payload.did,
+      mobileSession: payload.plt === 'mobile',
+      hasPin: membership.hasPin,
+      pinConfirmed: false,
     };
+    const pin: unknown = request.headers[PIN_HEADER];
+    if (typeof pin === 'string' && membership.hasPin) {
+      const [m] = await this.dbs.withTenant({ tenantId: payload.tid, userId: payload.sub }, (tx) =>
+        tx.select({ pinHash: memberships.pinHash }).from(memberships).where(eq(memberships.id, membership.id)),
+      );
+      await confirmPin(this.dbs.db, payload.sub, m.pinHash!, pin);
+      auth.pinConfirmed = true;
+    }
     request.auth = auth;
 
     const allowed = this.reflector.getAllAndOverride<Role[] | undefined>(ROLES, targets);

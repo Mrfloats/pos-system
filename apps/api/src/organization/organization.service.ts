@@ -9,6 +9,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import { and, asc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
 import { type AuthContext } from '../common/auth-context.js';
+import { nextStaffCode } from '../common/staff-code.js';
 import { effectivePermissions, permissionCatalog } from '../common/permissions.js';
 import { TenantCrud } from '../common/tenant-crud.js';
 import { found } from '../common/validation.js';
@@ -108,6 +109,7 @@ export class StaffService {
           fullName: users.fullName,
           phone: users.phone,
           role: memberships.role,
+          staffCode: memberships.staffCode,
           active: memberships.active,
           deniedPermissions: memberships.deniedPermissions,
           hasPin: isNotNull(memberships.pinHash),
@@ -158,7 +160,7 @@ export class StaffService {
       const pinHash = dto.pin ? await this.checkedPinHash(tx, dto.pin) : null;
       const [m] = await tx
         .insert(memberships)
-        .values({ tenantId: ctx.tenantId, userId: user.id, role: dto.role, pinHash })
+        .values({ tenantId: ctx.tenantId, userId: user.id, role: dto.role, staffCode: await nextStaffCode(tx, dto.role), pinHash })
         .onConflictDoNothing()
         .returning({ id: memberships.id });
       if (!m) throw new ConflictException('This person is already on your staff list');

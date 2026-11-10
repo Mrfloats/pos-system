@@ -112,7 +112,9 @@ export default function StaffPage() {
                 <tr key={s.id} className={s.active ? "" : "text-ink-faint"}>
                   <Td>
                     <div className="font-medium">{s.fullName}</div>
-                    <div className="text-xs text-ink-soft">{s.email}</div>
+                    <div className="text-xs text-ink-soft">
+                      <span className="tabular-nums">{s.staffCode}</span> · {s.email}
+                    </div>
                   </Td>
                   <Td>
                     <span className="inline-flex flex-wrap items-center gap-1.5">
@@ -180,7 +182,7 @@ export default function StaffPage() {
                 </Select>
               )}
             </Field>
-            <Field label={draft.id ? "New till PIN" : "Till PIN"} hint="4 to 6 digits, unique in your business.">
+            <Field label={draft.id ? "New till PIN" : "Till PIN"} hint="4 to 6 digits, unique in your business. Also confirms price changes and refunds on the phone app.">
               {(id) => (
                 <Input
                   id={id}

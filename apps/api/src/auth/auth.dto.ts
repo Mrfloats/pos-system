@@ -70,6 +70,33 @@ export class LoginDto {
   @IsOptional()
   @IsUUID()
   tenantId?: string;
+
+  /**
+   * "mobile" for the phone app: the access token is short-lived and comes with a
+   * refresh token to keep in the phone's keychain (see POST /auth/refresh).
+   */
+  @IsOptional()
+  @IsIn(['mobile'])
+  session?: 'mobile';
+}
+
+const RefreshToken = () => Matches(/^rt_[A-Za-z0-9_-]{20,100}$/, { message: 'refreshToken is not a refresh token' });
+
+export class RefreshDto {
+  @IsString() @RefreshToken() refreshToken: string;
+
+  /** Carry on in another business the person belongs to. */
+  @IsOptional() @IsUUID() tenantId?: string;
+}
+
+export class LogoutDto {
+  @IsString() @RefreshToken() refreshToken: string;
+}
+
+/** Choosing your own PIN, proven with your password. */
+export class SetPinDto {
+  @IsString() @MaxLength(128) password: string;
+  @Matches(/^\d{4,6}$/, { message: 'pin must be 4–6 digits' }) pin: string;
 }
 
 /** Signing in on a paired till: the device's secret picks the business and store, the PIN picks the person. */

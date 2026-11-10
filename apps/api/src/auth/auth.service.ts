@@ -7,15 +7,31 @@ import {
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { hash, verify } from '@node-rs/argon2';
-import { createHash } from 'node:crypto';
-import { and, asc, eq, isNotNull, sql } from 'drizzle-orm';
+import { createHash, randomBytes } from 'node:crypto';
+import { and, asc, eq, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
 import { type AuthContext, DEVICE_REVOKED, JwtPayload } from '../common/auth-context.js';
+import { AuditService } from '../common/audit.service.js';
+import { assertNotLocked, clearFailures, recordFailure } from '../common/lockout.js';
 import { effectivePermissions } from '../common/permissions.js';
+import { nextStaffCode } from '../common/staff-code.js';
 import { DbService, Tx } from '../db/db.service.js';
-import { devices, memberships, plans, signupRequests, stores, storeStaff, tenants, users } from '../db/schema.js';
-import { ChangePasswordDto, LoginDto, SignupDto, SignupRequestDto, TillSignInDto } from './auth.dto.js';
+import { devices, memberships, plans, refreshTokens, signupRequests, stores, storeStaff, tenants, users } from '../db/schema.js';
+import { ChangePasswordDto, LoginDto, LogoutDto, RefreshDto, SetPinDto, SignupDto, SignupRequestDto, TillSignInDto } from './auth.dto.js';
 import { TenantSetupService } from './tenant-setup.service.js';
+
+/** A phone's access token lasts this long; the app swaps its refresh token for a new one before then. */
+const MOBILE_ACCESS_SECONDS = Number(process.env.MOBILE_ACCESS_SECONDS ?? 900);
+/** A phone sign-in left unused for this many days ends. */
+const REFRESH_IDLE_DAYS = Number(process.env.REFRESH_IDLE_DAYS ?? 30);
+/**
+ * A refresh token may be used again for this long after it was swapped: a phone
+ * on a bad connection can miss the answer and ask twice. Later than that, a
+ * second use means the token was copied.
+ */
+const REFRESH_REUSE_GRACE_SECONDS = 60;
+
+const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
 /** What a new business needs: its details and its owner's login. */
 export interface NewBusiness {
@@ -38,6 +54,7 @@ export class AuthService {
     private readonly dbs: DbService,
     private readonly jwt: JwtService,
     private readonly setup: TenantSetupService,
+    private readonly audit: AuditService,
   ) {}
 
   /**
@@ -80,7 +97,7 @@ export class AuthService {
       phone: input.phone ?? null,
       email: input.email,
     });
-    await tx.insert(memberships).values({ tenantId, userId: user.id, role: 'owner' });
+    await tx.insert(memberships).values({ tenantId, userId: user.id, role: 'owner', staffCode: await nextStaffCode(tx, 'owner') });
     await this.setup.seedDefaults(tx, tenantId, { businessType: input.businessType, country, baseCurrency });
     return { userId: user.id, tenantId };
   }
@@ -141,10 +158,12 @@ export class AuthService {
 
   async login(dto: LoginDto) {
     const [user] = await this.dbs.db
-      .select({ id: users.id, passwordHash: users.passwordHash })
+      .select({ id: users.id, passwordHash: users.passwordHash, lockedUntil: users.lockedUntil, failedLogins: users.failedLogins })
       .from(users)
       .where(eq(users.email, dto.email))
       .limit(1);
+    // Locked after too many wrong passwords: even the right one waits.
+    assertNotLocked(user?.lockedUntil);
 
     const ok = await verify(user?.passwordHash ?? (await this.dummyHash), dto.password).catch(() => false);
     if (!user) {
@@ -158,6 +177,7 @@ export class AuthService {
         );
       }
     }
+    if (user && !ok) await recordFailure(this.dbs.db, user.id);
     if (!user || !ok) throw new UnauthorizedException('Wrong email or password');
 
     const choices = await this.businessesFor(user.id);
@@ -168,9 +188,77 @@ export class AuthService {
 
     await this.dbs.db
       .update(users)
-      .set({ lastLoginAt: sql`now()` })
+      .set({ lastLoginAt: sql`now()`, failedLogins: 0, lockedUntil: null })
       .where(eq(users.id, user.id));
-    return this.session(user.id, chosen.tenantId);
+    return dto.session === 'mobile' ? this.mobileSession(user.id, chosen.tenantId) : this.session(user.id, chosen.tenantId);
+  }
+
+  /**
+   * Swaps a phone's refresh token for a new access token and a new refresh token
+   * (optionally in another of the person's businesses). A token that was already
+   * swapped a while ago has been copied: every token from that sign-in is ended.
+   */
+  async refresh(dto: RefreshDto) {
+    const tokenHash = sha256(dto.refreshToken);
+    const row = await this.dbs.db.transaction(async (tx) => {
+      const [t] = await tx
+        .select({
+          id: refreshTokens.id,
+          familyId: refreshTokens.familyId,
+          userId: refreshTokens.userId,
+          tenantId: refreshTokens.tenantId,
+          used: isNotNull(refreshTokens.usedAt),
+          dead: sql<boolean>`${refreshTokens.revokedAt} IS NOT NULL OR ${refreshTokens.expiresAt} <= now()`,
+          reused: sql<boolean>`coalesce(${refreshTokens.usedAt} < now() - make_interval(secs => ${REFRESH_REUSE_GRACE_SECONDS}), false)`,
+        })
+        .from(refreshTokens)
+        .where(eq(refreshTokens.tokenHash, tokenHash))
+        .for('update');
+      if (!t || t.dead) return undefined;
+      if (t.reused) {
+        await tx.update(refreshTokens).set({ revokedAt: sql`now()` }).where(and(eq(refreshTokens.familyId, t.familyId), isNull(refreshTokens.revokedAt)));
+        return undefined;
+      }
+      if (!t.used) await tx.update(refreshTokens).set({ usedAt: sql`now()` }).where(eq(refreshTokens.id, t.id));
+      // Tidy up this person's long-dead tokens while we're here.
+      await tx.delete(refreshTokens).where(and(eq(refreshTokens.userId, t.userId), lt(refreshTokens.expiresAt, sql`now()`)));
+      return t;
+    });
+    if (!row) throw new UnauthorizedException('Your session has ended. Sign in again.');
+    // session() refuses if the person no longer belongs to the business.
+    return this.mobileSession(row.userId, dto.tenantId ?? row.tenantId, row.familyId);
+  }
+
+  /** Ends a phone sign-in. Always answers ok, so it can't be used to test tokens. */
+  async logout(dto: LogoutDto) {
+    const [t] = await this.dbs.db.select({ familyId: refreshTokens.familyId }).from(refreshTokens).where(eq(refreshTokens.tokenHash, sha256(dto.refreshToken)));
+    if (t) {
+      await this.dbs.db.update(refreshTokens).set({ revokedAt: sql`now()` }).where(and(eq(refreshTokens.familyId, t.familyId), isNull(refreshTokens.revokedAt)));
+    }
+    return { ok: true };
+  }
+
+  /** Sets the signed-in person's own PIN, after checking their password. PINs are unique in a business. */
+  async setPin(auth: AuthContext, dto: SetPinDto) {
+    const [user] = await this.dbs.db.select({ passwordHash: users.passwordHash, lockedUntil: users.lockedUntil }).from(users).where(eq(users.id, auth.userId));
+    assertNotLocked(user.lockedUntil);
+    if (!(await verify(user.passwordHash, dto.password).catch(() => false))) {
+      await recordFailure(this.dbs.db, auth.userId);
+      throw new BadRequestException('Wrong password');
+    }
+    await clearFailures(this.dbs.db, auth.userId);
+    await this.dbs.withTenant(auth, async (tx) => {
+      const others = await tx
+        .select({ pinHash: memberships.pinHash })
+        .from(memberships)
+        .where(and(isNotNull(memberships.pinHash), ne(memberships.id, auth.membershipId)));
+      for (const o of others) {
+        if (await verify(o.pinHash!, dto.pin).catch(() => false)) throw new ConflictException('Choose a different PIN');
+      }
+      await tx.update(memberships).set({ pinHash: await hash(dto.pin) }).where(eq(memberships.id, auth.membershipId));
+      await this.audit.log(tx, auth, 'set_pin', 'Staff', auth.membershipId);
+    });
+    return { ok: true };
   }
 
   /**
@@ -250,6 +338,8 @@ export class AuthService {
           tenantId: memberships.tenantId,
           membershipId: memberships.id,
           role: memberships.role,
+          staffCode: memberships.staffCode,
+          hasPin: isNotNull(memberships.pinHash),
           denied: memberships.deniedPermissions,
           name: tenants.name,
           businessType: tenants.businessType,
@@ -261,10 +351,25 @@ export class AuthService {
     );
   }
 
-  private async session(userId: string, tenantId: string, till?: Pick<JwtPayload, 'did' | 'dfp'>) {
+  private async session(userId: string, tenantId: string, extra?: Pick<JwtPayload, 'did' | 'dfp' | 'plt'>) {
     const profile = await this.profile(userId, tenantId);
-    const payload: JwtPayload = { sub: userId, tid: tenantId, mid: profile.membership.id, ...till };
-    return { accessToken: await this.jwt.signAsync(payload), ...profile };
+    const payload: JwtPayload = { sub: userId, tid: tenantId, mid: profile.membership.id, ...extra };
+    const accessToken = extra?.plt ? await this.jwt.signAsync(payload, { expiresIn: MOBILE_ACCESS_SECONDS }) : await this.jwt.signAsync(payload);
+    return { accessToken, ...profile };
+  }
+
+  /** A phone session: a short-lived access token plus a refresh token (a new one each time, in the same family). */
+  private async mobileSession(userId: string, tenantId: string, familyId: string = uuidv7()) {
+    const session = await this.session(userId, tenantId, { plt: 'mobile' });
+    const refreshToken = `rt_${randomBytes(32).toString('base64url')}`;
+    await this.dbs.db.insert(refreshTokens).values({
+      familyId,
+      userId,
+      tenantId,
+      tokenHash: sha256(refreshToken),
+      expiresAt: sql`now() + make_interval(days => ${REFRESH_IDLE_DAYS})`,
+    });
+    return { ...session, refreshToken, expiresIn: MOBILE_ACCESS_SECONDS };
   }
 
   private async profile(userId: string, tenantId: string) {
@@ -283,7 +388,7 @@ export class AuthService {
       user,
       tenant,
       // What the apps show; the API checks each request itself.
-      membership: { id: current.membershipId, role: current.role, permissions: effectivePermissions(current.role, current.denied) },
+      membership: { id: current.membershipId, role: current.role, staffCode: current.staffCode, hasPin: current.hasPin, permissions: effectivePermissions(current.role, current.denied) },
       businesses: businesses.map((b) => ({
         tenantId: b.tenantId,
         name: b.name,

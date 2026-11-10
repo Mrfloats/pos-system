@@ -12,6 +12,7 @@ const CONSTRAINT_MESSAGES: Record<string, string> = {
   currencies_tenant_code_uq: 'This currency is already set up',
   units_tenant_abbr_uq: 'Another unit already uses this abbreviation',
   memberships_tenant_user_uq: 'This person is already on your staff list',
+  memberships_tenant_code_uq: 'Someone else was added at the same moment. Try again',
   users_email_unique: 'An account with this email already exists',
   accounts_tenant_code_uq: 'Another account already uses this code',
   attributes_tenant_name_uq: 'Another attribute already has this name',
