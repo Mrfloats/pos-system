@@ -8,6 +8,7 @@
 import 'dart:io';
 import 'dart:math';
 
+import 'package:floatly_till/admin/admin_state.dart';
 import 'package:floatly_till/core/api.dart';
 import 'package:floatly_till/core/local_store.dart';
 import 'package:floatly_till/core/money.dart';
@@ -148,5 +149,46 @@ void main() {
     },
     skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
     timeout: const Timeout(Duration(minutes: 3)),
+  );
+
+  test(
+    'an owner signs in to manage the business, sees the dashboard, and the session refreshes and ends',
+    () async {
+      var now = DateTime.now();
+      final store = MemoryStore();
+      final admin = AdminState(store, clock: () => now);
+      await admin.init();
+      expect(await admin.signIn(server: server!, email: 'demo@pos.local', password: 'wrong-password'), 'Wrong email or password');
+      expect(await admin.signIn(server: server, email: 'demo@pos.local', password: 'demo1234'), isNull);
+      final s = admin.session!;
+      expect(s.role, 'owner');
+      expect(s.staffCode, startsWith('OWN-'));
+      expect(s.can('dashboard.view'), isTrue);
+      expect(admin.stores, isNotEmpty);
+      expect(admin.symbol, isNotEmpty);
+
+      final all = await admin.call((api) => api.get('/dashboard')) as Map;
+      expect((all['trend'] as List), hasLength(8));
+      expect(all['today'], containsPair('sales', isA<int>()));
+      final one = await admin.call((api) => api.get('/dashboard', query: {'storeId': admin.stores.first.id})) as Map;
+      expect(one['storeId'], admin.stores.first.id);
+
+      // The access token runs out: the next call swaps the refresh token and carries on.
+      now = now.add(const Duration(minutes: 20));
+      await admin.call((api) => api.get('/dashboard'));
+
+      // A cashier can't sign in here at all.
+      final cashier = AdminState(MemoryStore());
+      await cashier.init();
+      expect(await cashier.signIn(server: server, email: 'cashier@pos.local', password: 'demo1234'), contains('owners, admins and managers'));
+      cashier.dispose();
+
+      await admin.signOut();
+      expect(admin.signedIn, isFalse);
+      expect(store.secrets, isEmpty);
+      admin.dispose();
+    },
+    skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
   );
 }

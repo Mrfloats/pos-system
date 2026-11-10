@@ -1991,3 +1991,107 @@ describe('phone sign-in, lockout and PIN confirmation', () => {
     await setPrice(t, '5.00').set(pin('4321')).expect(200);
   });
 });
+
+describe('dashboard and who may use the phone app', () => {
+  let ownerT: Record<string, string>;
+  let storeId: string;
+  let warehouseId: string;
+  let rice: string;
+  let beans: string;
+  const D = '/api/v1/dashboard';
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Dash Shop', 'dash@example.com')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    warehouseId = (await http.post('/api/v1/stores').set(ownerT).send({ name: 'Depot', code: 'DEP', type: 'warehouse' }).expect(201)).body.id;
+    const make = async (body: object) => (await http.post('/api/v1/products').set(ownerT).send(body).expect(201)).body.variants[0].id;
+    rice = await make({ name: 'Rice 5kg', variants: [{ price: '10.00', costPrice: '7.00', reorderLevel: 5 }] });
+    beans = await make({ name: 'Beans 1kg', variants: [{ price: '2.00', costPrice: '1.00', reorderLevel: 50 }] });
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId: rice, quantity: 20 }, { variantId: beans, quantity: 20 }] }).expect(201);
+    const sell = (lines: object[], amount: string, method = 'cash') =>
+      http.post('/api/v1/sales').set(ownerT).send({ storeId, lines, payments: [{ method, amount }] }).expect(201);
+    const first = await sell([{ variantId: rice, quantity: 2 }], '20');
+    await sell([{ variantId: rice, quantity: 1 }, { variantId: beans, quantity: 5 }], '20', 'card');
+    await http.post(`/api/v1/sales/${first.body.id}/returns`).set(ownerT).send({ lines: [{ lineId: first.body.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Split bag' }).expect(201);
+    // A sale a week ago and one yesterday, to compare with.
+    const db = ownerDb();
+    try {
+      const old = await sell([{ variantId: beans, quantity: 5 }], '10');
+      await db.query(`UPDATE sales SET sold_at = now() - interval '7 days' WHERE id = $1`, [old.body.id]);
+      const y = await sell([{ variantId: rice, quantity: 4 }], '40');
+      await db.query(`UPDATE sales SET sold_at = now() - interval '1 day' WHERE id = $1`, [y.body.id]);
+    } finally {
+      await db.end();
+    }
+  });
+
+  it("sums up today, compares it and lists what's selling and what's low", async () => {
+    const res = await http.get(D).set(ownerT).expect(200);
+    // Today: 20.00 + 20.00 sold, 10.00 refunded.
+    expect(res.body.today).toEqual({ gross: '30.00', sales: 2, returns: 1, averageBasket: '20.00' });
+    expect(res.body.yesterday).toMatchObject({ gross: '40.00', sales: 1, changePercent: -25 });
+    expect(res.body.lastWeek).toMatchObject({ gross: '10.00', sales: 1, changePercent: 200 });
+    expect(res.body.trend).toHaveLength(8);
+    expect(res.body.trend[7]).toMatchObject({ day: res.body.date, gross: '30.00' });
+    expect(res.body.currencyCode).toBe('USD');
+    expect(res.body.topProducts.map((p: any) => [p.name, p.quantity, p.revenue])).toEqual([
+      ['Rice 5kg', '2.000', '20.00'],
+      ['Beans 1kg', '5.000', '10.00'],
+    ]);
+    expect(res.body.paymentMethods).toEqual([
+      { method: 'card', amount: '20.00' },
+      { method: 'cash', amount: '10.00' },
+    ]);
+    // Beans: 20 received, 10 sold, reorder at 50. Rice: 20 − 7 + 1 = 14, reorder at 5.
+    expect(res.body.lowStock).toMatchObject({ total: 1, items: [{ name: 'Beans 1kg', onHand: '10.000', reorderLevel: '50.000' }] });
+  });
+
+  it('narrows to one store', async () => {
+    const depot = await http.get(D).query({ storeId: warehouseId }).set(ownerT).expect(200);
+    expect(depot.body.today).toEqual({ gross: '0.00', sales: 0, returns: 0, averageBasket: '0.00' });
+    expect(depot.body.yesterday.changePercent).toBeNull();
+    expect(depot.body.topProducts).toEqual([]);
+    expect(depot.body.lowStock.total).toBe(2); // nothing is kept there
+    const shop = await http.get(D).query({ storeId }).set(ownerT).expect(200);
+    expect(shop.body.today.gross).toBe('30.00');
+    const other = await signup('Dash Other', 'dash-other@example.com');
+    const otherStore = (await http.get('/api/v1/stores').set(auth(other.accessToken))).body[0].id;
+    await http.get(D).query({ storeId: otherStore }).set(ownerT).expect(400);
+    expect((await http.get(D).set(auth(other.accessToken)).expect(200)).body.today.sales).toBe(0);
+  });
+
+  it('is for managers and up, and can be taken away', async () => {
+    const add = async (email: string, role: string) => {
+      const res = await http.post('/api/v1/staff').set(ownerT).send({ email, fullName: role, password: 'password123', role }).expect(201);
+      return { id: res.body.id as string, t: auth((await http.post('/api/v1/auth/login').send({ email, password: 'password123' }).expect(200)).body.accessToken) };
+    };
+    const manager = await add('dash-manager@example.com', 'manager');
+    await http.get(D).set(manager.t).expect(200);
+    for (const role of ['cashier', 'waiter', 'stock_clerk', 'accountant']) {
+      const member = await add(`dash-${role}@example.com`, role);
+      await http.get(D).set(member.t).expect(403);
+    }
+    await http.patch(`/api/v1/staff/${manager.id}`).set(ownerT).send({ deniedPermissions: ['dashboard.view'] }).expect(200);
+    await http.get(D).set(manager.t).expect(403);
+  });
+
+  it('only lets owners, admins and managers sign in to the phone app', async () => {
+    const phone = (email: string) => http.post('/api/v1/auth/login').send({ email, password: 'password123', session: 'mobile' });
+    await phone('dash@example.com').expect(200);
+    await phone('dash-manager@example.com').expect(200);
+    for (const role of ['cashier', 'waiter', 'stock_clerk', 'accountant']) {
+      const res = await phone(`dash-${role}@example.com`).expect(403);
+      expect(res.body.code).toBe('not_for_role');
+      // …though they can still use the backoffice pages their role allows.
+      await http.post('/api/v1/auth/login').send({ email: `dash-${role}@example.com`, password: 'password123' }).expect(200);
+    }
+    // No refresh token was left behind for them.
+    const db = ownerDb();
+    try {
+      const left = await db.query(`SELECT count(*)::int AS n FROM refresh_tokens r JOIN users u ON u.id = r.user_id WHERE u.email LIKE 'dash-cashier%'`);
+      expect(left.rows[0].n).toBe(0);
+    } finally {
+      await db.end();
+    }
+  });
+});

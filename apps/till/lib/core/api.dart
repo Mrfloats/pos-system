@@ -20,7 +20,7 @@ class ApiException implements Exception {
 
 /// Talks to the Floatly API, the same one the backoffice uses.
 class Api {
-  Api({required String server, this.token, this.client = 'till'}) : base = apiBase(server);
+  Api({required String server, this.token, this.client = 'till', this.pin}) : base = apiBase(server);
 
   final String base;
   final String? token;
@@ -28,7 +28,11 @@ class Api {
   /// Which app is calling ("till" or "mobile"), kept in the backoffice's audit trail.
   final String client;
 
-  static final _client = http.Client();
+  /// The person's PIN, sent to confirm a sensitive action (a price change, a refund) from a phone.
+  final String? pin;
+
+  /// Swapped for a fake in tests.
+  static http.Client httpClient = http.Client();
 
   /// What people type ("floatly-api.vercel.app") → the API's address ("https://floatly-api.vercel.app/api/v1").
   static String apiBase(String server) {
@@ -55,11 +59,12 @@ class Api {
       ..headers['Content-Type'] = 'application/json'
       ..headers['X-Floatly-Client'] = client;
     if (token != null) request.headers['Authorization'] = 'Bearer $token';
+    if (pin != null) request.headers['X-Floatly-Pin'] = pin!;
     if (body != null) request.body = jsonEncode(body);
 
     final http.Response res;
     try {
-      res = await http.Response.fromStream(await _client.send(request).timeout(timeout));
+      res = await http.Response.fromStream(await httpClient.send(request).timeout(timeout));
     } on TimeoutException {
       throw ApiException(0, "Floatly took too long to answer. Check the internet connection.");
     } catch (_) {

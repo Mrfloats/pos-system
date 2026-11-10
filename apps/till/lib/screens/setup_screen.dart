@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../admin/admin_login_screen.dart';
 import '../core/api.dart';
 import '../state/till_state.dart';
 import '../theme.dart';
@@ -207,6 +208,15 @@ class _SetupScreenState extends State<SetupScreen> {
                       ),
                     ),
                   ),
+                  if (!widget.canCancel && _step == _Step.signIn) ...[
+                    const SizedBox(height: 12),
+                    // Not a till: the owner's own phone, for managing the business.
+                    OutlinedButton.icon(
+                      onPressed: _busy ? null : () => Navigator.push(context, MaterialPageRoute(builder: (_) => AdminLoginScreen(server: _server.text))),
+                      icon: const Icon(Icons.insights_outlined),
+                      label: const Text('Manage your business instead'),
+                    ),
+                  ],
                   const SizedBox(height: 16),
                   Text(
                     'An owner or admin signs in once to link this device to a store. After that, staff sign in with the till PIN set for them in the backoffice under Staff.',

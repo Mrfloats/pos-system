@@ -10,7 +10,7 @@ import { hash, verify } from '@node-rs/argon2';
 import { createHash, randomBytes } from 'node:crypto';
 import { and, asc, eq, isNotNull, isNull, lt, ne, sql } from 'drizzle-orm';
 import { v7 as uuidv7 } from 'uuid';
-import { type AuthContext, DEVICE_REVOKED, JwtPayload } from '../common/auth-context.js';
+import { type AuthContext, DEVICE_REVOKED, JwtPayload, MANAGERS } from '../common/auth-context.js';
 import { AuditService } from '../common/audit.service.js';
 import { assertNotLocked, clearFailures, recordFailure } from '../common/lockout.js';
 import { effectivePermissions } from '../common/permissions.js';
@@ -361,6 +361,14 @@ export class AuthService {
   /** A phone session: a short-lived access token plus a refresh token (a new one each time, in the same family). */
   private async mobileSession(userId: string, tenantId: string, familyId: string = uuidv7()) {
     const session = await this.session(userId, tenantId, { plt: 'mobile' });
+    // The phone app is the backoffice in your pocket: not for cashiers, waiters and other till staff.
+    if (!MANAGERS.includes(session.membership.role)) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        code: 'not_for_role',
+        message: 'Managing the business on a phone is for owners, admins and managers. Sign in on a till with your PIN instead.',
+      });
+    }
     const refreshToken = `rt_${randomBytes(32).toString('base64url')}`;
     await this.dbs.db.insert(refreshTokens).values({
       familyId,

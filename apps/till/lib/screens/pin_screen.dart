@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../admin/admin_login_screen.dart';
+import '../admin/admin_widgets.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 import 'setup_screen.dart';
@@ -69,6 +71,17 @@ class _PinScreenState extends State<PinScreen> {
       return KeyEventResult.ignored;
     }
     return KeyEventResult.handled;
+  }
+
+  /// An owner or admin manages the business from this device: back to their admin area if they're
+  /// signed in (it asks for their PIN), else their email and password.
+  void _manage() {
+    final admin = AdminScope.read(context);
+    if (admin.signedIn) {
+      admin.returnFromTill();
+    } else {
+      Navigator.push(context, MaterialPageRoute(builder: (_) => AdminLoginScreen(server: TillScope.read(context).device?.server)));
+    }
   }
 
   Future<void> _setUpAgain() async {
@@ -163,11 +176,15 @@ class _PinScreenState extends State<PinScreen> {
                 top: 4,
                 child: PopupMenuButton<String>(
                   iconColor: Colors.white70,
-                  onSelected: (v) => v == 'setup' ? _setUpAgain() : null,
+                  onSelected: (v) => v == 'setup' ? _setUpAgain() : _manage(),
                   itemBuilder: (_) => [
                     const PopupMenuItem(
                       value: 'setup',
                       child: ListTile(leading: Icon(Icons.settings_outlined), title: Text('Set up this device again')),
+                    ),
+                    const PopupMenuItem(
+                      value: 'manage',
+                      child: ListTile(leading: Icon(Icons.insights_outlined), title: Text('Manage the business')),
                     ),
                   ],
                 ),
