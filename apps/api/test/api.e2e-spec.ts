@@ -2095,3 +2095,73 @@ describe('dashboard and who may use the phone app', () => {
     }
   });
 });
+
+describe('sales activity filters', () => {
+  let ownerT: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let cashierUserId: string;
+  let storeId: string;
+  let depotId: string;
+  const S = '/api/v1/sales';
+  const list = (query: object, t = ownerT) => http.get(S).query(query).set(t).expect(200);
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Activity Shop', 'activity@example.com')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    depotId = (await http.post('/api/v1/stores').set(ownerT).send({ name: 'Second Shop', code: 'TWO' }).expect(201)).body.id;
+    const staff = await http.post('/api/v1/staff').set(ownerT).send({ email: 'activity-cashier@example.com', fullName: 'Chipo Cashier', password: 'password123', role: 'cashier' }).expect(201);
+    cashierUserId = staff.body.userId;
+    cashierT = auth((await http.post('/api/v1/auth/login').send({ email: 'activity-cashier@example.com', password: 'password123' }).expect(200)).body.accessToken);
+    const v = (await http.post('/api/v1/products').set(ownerT).send({ name: 'Soap', variants: [{ price: '1.00' }] }).expect(201)).body.variants[0].id;
+    for (const s of [storeId, depotId]) await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId: s, type: 'receive', lines: [{ variantId: v, quantity: 50 }] }).expect(201);
+    const sell = (t: Record<string, string>, store: string, quantity: number, payments: object[], customerName?: string) =>
+      http.post(S).set(t).send({ storeId: store, lines: [{ variantId: v, quantity }], payments, customerName }).expect(201);
+    const a = await sell(ownerT, storeId, 10, [{ method: 'cash', amount: '10' }]);
+    await sell(cashierT, storeId, 4, [{ method: 'card', amount: '4' }], 'Mai Tino');
+    await sell(cashierT, depotId, 6, [{ method: 'cash', amount: '2' }, { method: 'mobile', amount: '4' }]);
+    const voided = await sell(cashierT, storeId, 3, [{ method: 'cash', amount: '3' }]);
+    await http.post(`${S}/${voided.body.id}/void`).set(ownerT).expect(201);
+    await http.post(`${S}/${a.body.id}/returns`).set(ownerT).send({ lines: [{ lineId: a.body.lines[0].id, quantity: 2 }], method: 'cash', reason: 'Wrong one' }).expect(201);
+  });
+
+  it('lists everything with how each was paid and what it all comes to', async () => {
+    const res = await list({});
+    expect(res.body.total).toBe(5);
+    // 10 + 4 + 6 sold, 2 refunded; the voided 3 doesn't count.
+    expect(res.body.totalBase).toBe('18.00');
+    const split = res.body.items.find((s: any) => s.total === '6.00');
+    expect(split).toMatchObject({ paymentMethods: ['cash', 'mobile'], salesperson: 'Chipo Cashier', storeName: 'Second Shop' });
+  });
+
+  it('filters by cashier, payment method, branch, kind and words', async () => {
+    const mine = await list({ cashierId: cashierUserId });
+    expect(mine.body.total).toBe(3);
+    expect(mine.body.totalBase).toBe('10.00');
+    expect(mine.body.items.every((s: any) => s.salesperson === 'Chipo Cashier')).toBe(true);
+
+    expect((await list({ paymentMethod: 'mobile' })).body.items.map((s: any) => s.total)).toEqual(['6.00']);
+    expect((await list({ paymentMethod: 'card' })).body.total).toBe(1);
+    expect((await list({ paymentMethod: 'cash', cashierId: cashierUserId, storeId })).body.items.map((s: any) => s.status)).toEqual(['void']);
+    expect((await list({ storeId: depotId })).body).toMatchObject({ total: 1, totalBase: '6.00' });
+    expect((await list({ type: 'return' })).body).toMatchObject({ total: 1, totalBase: '-2.00' });
+    expect((await list({ status: 'void' })).body).toMatchObject({ total: 1, totalBase: '0.00' });
+    expect((await list({ search: 'tino' })).body.items.map((s: any) => s.customerName)).toEqual(['Mai Tino']);
+    expect((await list({ from: '2000-01-01', to: '2000-01-02' })).body).toMatchObject({ total: 0, totalBase: '0.00' });
+    await http.get(S).query({ paymentMethod: 'cheque' }).set(ownerT).expect(400);
+    const soap = (await http.get('/api/v1/products').set(ownerT)).body.items[0].variants[0].id;
+    await http.post(`${S}/quotations`).set(ownerT).send({ storeId, lines: [{ variantId: soap, quantity: 1 }] }).expect(201);
+    expect((await list({})).body.total).toBe(6);
+    expect((await list({ excludeQuotations: 'true' })).body).toMatchObject({ total: 5, totalBase: '18.00' });
+    await http.get(S).query({ cashierId: 'someone' }).set(ownerT).expect(400);
+  });
+
+  it('pages through, keeping the total for the whole list', async () => {
+    const first = await list({ pageSize: 2 });
+    const second = await list({ pageSize: 2, page: 2 });
+    expect(first.body.items).toHaveLength(2);
+    expect(second.body.items).toHaveLength(2);
+    expect(first.body.totalBase).toBe('18.00');
+    expect(second.body.totalBase).toBe('18.00');
+    expect(new Set([...first.body.items, ...second.body.items].map((s: any) => s.id)).size).toBe(4);
+  });
+});

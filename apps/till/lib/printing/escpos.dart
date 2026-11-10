@@ -167,9 +167,9 @@ Uint8List receiptEscPos(Receipt r, {required int paperWidth, bool openDrawer = f
   p.rule();
   final d = r.soldAt;
   p.bold(true);
-  p.row(r.number != null ? 'Sale ${r.number}' : 'Receipt ${r.reference}', '${d.year}-${_two(d.month)}-${_two(d.day)} ${_two(d.hour)}:${_two(d.minute)}');
+  p.row(r.heading, '${d.year}-${_two(d.month)}-${_two(d.day)} ${_two(d.hour)}:${_two(d.minute)}');
   p.bold(false);
-  if (r.number != null) p.row('Till ref', r.reference);
+  if (r.showTillRef) p.row('Till ref', r.reference);
   p.row('Cashier', r.cashier);
   if (r.customerName != null) p.row('Customer', r.customerName!);
   if (r.customerTin != null) p.row('Customer TIN', r.customerTin!);

@@ -232,11 +232,11 @@ class ReceiptView extends StatelessWidget {
               if (line != null) Text(line, textAlign: TextAlign.center, style: muted),
             const _Dashes(),
             row(
-              r.number != null ? 'Sale ${r.number}' : 'Receipt ${r.reference}',
+              r.heading,
               '${d.year}-${two(d.month)}-${two(d.day)} ${two(d.hour)}:${two(d.minute)}',
               style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.black87),
             ),
-            if (r.number != null) row('Till ref', r.reference, style: muted),
+            if (r.showTillRef) row('Till ref', r.reference, style: muted),
             row('Cashier', r.cashier, style: muted),
             if (r.customerName != null) row('Customer', r.customerName!, style: muted),
             if (r.customerTin != null) row('Customer TIN', r.customerTin!, style: muted),

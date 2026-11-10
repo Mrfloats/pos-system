@@ -17,14 +17,21 @@ class Business {
 
 /// A branch: a shop, restaurant or warehouse.
 class StoreInfo {
-  StoreInfo({required this.id, required this.name, required this.code, required this.type});
+  StoreInfo({required this.id, required this.name, required this.code, required this.type, this.address, this.phone});
 
-  factory StoreInfo.fromJson(Map<String, dynamic> j) =>
-      StoreInfo(id: j['id'] as String, name: j['name'] as String, code: j['code'] as String, type: (j['type'] as String?) ?? 'shop');
+  factory StoreInfo.fromJson(Map<String, dynamic> j) => StoreInfo(
+    id: j['id'] as String,
+    name: j['name'] as String,
+    code: j['code'] as String,
+    type: (j['type'] as String?) ?? 'shop',
+    address: j['address'] as String?,
+    phone: j['phone'] as String?,
+  );
 
   final String id, name, code, type;
+  final String? address, phone;
 
-  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'code': code, 'type': type};
+  Map<String, dynamic> toJson() => {'id': id, 'name': name, 'code': code, 'type': type, 'address': address, 'phone': phone};
 }
 
 const roleLabels = {
@@ -60,6 +67,12 @@ class AdminSession {
   String get tenantId => _tenant['id'] as String;
   String get businessName => _tenant['name'] as String;
   String get currencyCode => (_tenant['baseCurrency'] as String?) ?? 'USD';
+
+  /// Printed at the top of receipts.
+  String? get address => _tenant['address'] as String?;
+  String? get phone => _tenant['phone'] as String?;
+  String? get tin => _tenant['tin'] as String?;
+  String? get vatNumber => _tenant['vatNumber'] as String?;
   late final Set<String> permissions = {...((_membership['permissions'] as List?) ?? const []).cast<String>()};
   late final List<Business> businesses = [for (final b in (json['businesses'] as List? ?? const [])) Business.fromJson((b as Map).cast())];
 
@@ -76,7 +89,16 @@ class AdminSession {
   /// What is kept on the phone between starts.
   Map<String, dynamic> toSaved() => {
     'user': _user,
-    'tenant': {'id': tenantId, 'name': businessName, 'baseCurrency': currencyCode, 'timezone': _tenant['timezone']},
+    'tenant': {
+      'id': tenantId,
+      'name': businessName,
+      'baseCurrency': currencyCode,
+      'timezone': _tenant['timezone'],
+      'address': address,
+      'phone': phone,
+      'tin': tin,
+      'vatNumber': vatNumber,
+    },
     'membership': _membership,
     'businesses': json['businesses'],
   };
@@ -110,6 +132,15 @@ class AdminState extends ChangeNotifier {
   /// The base currency's symbol ("$").
   String symbol = '';
 
+  /// Every currency the business takes: code → symbol.
+  Map<String, String> symbols = {};
+
+  /// A currency's symbol, or its code when it isn't one of the business's.
+  String symbolFor(String code) => symbols[code] ?? code;
+
+  /// An amount in some currency: "ZiG 331.25".
+  String moneyIn(Object? amount, String code) => formatMoney(toCents(amount), symbolFor(code));
+
   /// Waiting for the PIN: after starting the app, or after [idleLimit] untouched.
   bool locked = false;
 
@@ -123,7 +154,8 @@ class AdminState extends ChangeNotifier {
   String? _accessToken;
   DateTime? _accessExpires;
   Future<void>? _refreshing;
-  Timer? _idle;
+  /// How long since the last touch, counted by [tick].
+  Duration _idle = Duration.zero;
 
   /// Kept only between signing in and choosing a first PIN, so that step doesn't ask for it again.
   String? _password;
@@ -150,6 +182,7 @@ class AdminState extends ChangeNotifier {
         stores = [for (final s in (saved['stores'] as List? ?? const [])) StoreInfo.fromJson((s as Map).cast())];
         storeId = saved['storeId'] as String?;
         symbol = (saved['symbol'] as String?) ?? '';
+        symbols = ((saved['symbols'] as Map?) ?? const {}).cast<String, String>();
         _refreshToken = refresh;
         // Whoever opens the app proves who they are first.
         locked = true;
@@ -161,12 +194,6 @@ class AdminState extends ChangeNotifier {
     }
     ready = true;
     notifyListeners();
-  }
-
-  @override
-  void dispose() {
-    _idle?.cancel();
-    super.dispose();
   }
 
   // ----- Signing in and out ---------------------------------------------------------------
@@ -185,7 +212,7 @@ class AdminState extends ChangeNotifier {
       _password = session!.hasPin ? null : password;
       await _loadBasics();
       await _save();
-      _restartIdle();
+      _idle = Duration.zero;
       notifyListeners();
       return null;
     } on ApiException catch (e) {
@@ -213,6 +240,7 @@ class AdminState extends ChangeNotifier {
     final currencies = await call((api) => api.get('/currencies')) as List;
     final base = currencies.cast<Map>().where((c) => c['isBase'] == true).firstOrNull;
     symbol = (base?['symbol'] as String?) ?? session!.currencyCode;
+    symbols = {for (final c in currencies.cast<Map>()) c['code'] as String: (c['symbol'] as String?) ?? c['code'] as String};
   }
 
   /// Keeps the sign-in between starts, once there is a PIN to unlock it with.
@@ -226,6 +254,7 @@ class AdminState extends ChangeNotifier {
       'stores': [for (final st in stores) st.toJson()],
       'storeId': storeId,
       'symbol': symbol,
+      'symbols': symbols,
     });
   }
 
@@ -236,7 +265,6 @@ class AdminState extends ChangeNotifier {
   }
 
   Future<void> _end(String? why) async {
-    _idle?.cancel();
     session = null;
     _accessToken = null;
     _refreshToken = null;
@@ -306,19 +334,20 @@ class AdminState extends ChangeNotifier {
 
   /// Any touch in the admin area: the idle clock starts again.
   void touch() {
-    if (session != null && !locked) _restartIdle();
+    _idle = Duration.zero;
   }
 
-  void _restartIdle() {
-    _idle?.cancel();
-    _idle = Timer(idleLimit, lock);
+  /// Called by the app every so often with the time gone by: locks once [idleLimit] has passed untouched.
+  void tick(Duration elapsed) {
+    if (session == null || locked) return;
+    _idle += elapsed;
+    if (_idle >= idleLimit) lock();
   }
 
   /// Hides the admin area until the PIN is entered. Without a PIN there is nothing to unlock with, so it signs out.
   void lock() {
     final s = session;
     if (s == null || locked) return;
-    _idle?.cancel();
     if (!s.hasPin) {
       unawaited(signOut());
       return;
@@ -334,7 +363,7 @@ class AdminState extends ChangeNotifier {
       await call((api) => api.post('/auth/verify-pin'), pin: pin);
       locked = false;
       showTill = false;
-      _restartIdle();
+      _idle = Duration.zero;
       notifyListeners();
       // Things may have changed while it was locked.
       unawaited(_loadBasics().then((_) => _save()).then((_) => notifyListeners()).catchError((_) {}));

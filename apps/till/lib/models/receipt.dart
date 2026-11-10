@@ -1,3 +1,4 @@
+import '../core/money.dart';
 import 'catalog.dart';
 import 'sale.dart';
 
@@ -86,7 +87,76 @@ class Receipt {
     this.number,
     this.saleId,
     this.discarded = false,
+    this.isReturn = false,
   });
+
+  /// A receipt for a sale (or refund) as the API returns it from GET /sales/:id,
+  /// for looking up and reprinting from the admin area. [symbolOf] gives a
+  /// currency's symbol from its code.
+  factory Receipt.fromApiSale(
+    Map<String, dynamic> sale, {
+    required String businessName,
+    String? address,
+    String? phone,
+    String? tin,
+    String? vatNumber,
+    required String Function(String code) symbolOf,
+  }) {
+    final currency = sale['currencyCode'] as String;
+    final isReturn = sale['type'] == 'return';
+    String lineName(Map l) {
+      final variant = l['variantName'] as String?;
+      final pack = l['packName'] as String?;
+      return '${l['productName']}${variant != null && variant != 'Default' ? ' · $variant' : ''}${pack != null ? ' ($pack)' : ''}';
+    }
+
+    return Receipt(
+      clientId: (sale['clientId'] ?? sale['id']) as String,
+      reference: sale['number'] as String,
+      number: sale['number'] as String,
+      saleId: sale['id'] as String,
+      soldAt: DateTime.parse(sale['soldAt'] as String).toLocal(),
+      businessName: businessName,
+      storeName: (sale['storeName'] as String?) ?? '',
+      address: address,
+      phone: phone,
+      tin: tin,
+      vatNumber: vatNumber,
+      cashier: (sale['salesperson'] as String?) ?? '—',
+      customerName: sale['customerName'] as String?,
+      currencyCode: currency,
+      symbol: symbolOf(currency),
+      isReturn: isReturn,
+      lines: [
+        for (final l in (sale['lines'] as List).cast<Map>())
+          ReceiptLine(
+            name: lineName(l),
+            quantity: parseFixed(l['quantity'], 3),
+            unitPrice: toCents(l['unitPrice']),
+            discount: toCents(l['discount']),
+            total: toCents(l['total']),
+            note: l['note'] as String?,
+            choices: [for (final m in (l['modifiers'] as List? ?? const [])) (m as Map)['name'] as String],
+          ),
+      ],
+      subtotal: toCents(sale['subtotal']),
+      discountTotal: toCents(sale['discountTotal']),
+      taxTotal: toCents(sale['taxTotal']),
+      taxIncluded: true,
+      total: toCents(sale['total']),
+      payments: [
+        for (final p in (sale['payments'] as List).cast<Map>())
+          ReceiptPayment(
+            method: PayMethod.parse(p['method'] as String?),
+            currencyCode: p['currencyCode'] as String,
+            symbol: symbolOf(p['currencyCode'] as String),
+            // A refund's payment is stored as money going out; the receipt says "Refund" instead of a minus.
+            amount: toCents(p['amount']).abs(),
+            change: toCents(p['change']),
+          ),
+      ],
+    );
+  }
 
   factory Receipt.forSale({
     required String clientId,
@@ -178,7 +248,8 @@ class Receipt {
       payments = [for (final p in j['payments'] as List) ReceiptPayment.fromJson((p as Map).cast())],
       number = j['number'] as String?,
       saleId = j['saleId'] as String?,
-      discarded = j['discarded'] as bool? ?? false;
+      discarded = j['discarded'] as bool? ?? false,
+      isReturn = j['isReturn'] as bool? ?? false;
 
   /// The idempotency key the sale was uploaded with.
   final String clientId;
@@ -202,6 +273,15 @@ class Receipt {
 
   /// A manager threw away a sale Floatly refused.
   bool discarded;
+
+  /// Money given back, not taken.
+  final bool isReturn;
+
+  /// The line that names the receipt: "Sale S-00042", "Refund R-00003", or the till's own number before upload.
+  String get heading => number != null ? '${isReturn ? 'Refund' : 'Sale'} $number' : 'Receipt $reference';
+
+  /// The till's own running number, when there is one besides Floatly's.
+  bool get showTillRef => number != null && reference != number;
 
   bool get uploaded => saleId != null;
   int get change => payments.fold(0, (a, p) => a + p.change);
@@ -234,5 +314,6 @@ class Receipt {
     'number': number,
     'saleId': saleId,
     'discarded': discarded,
+    'isReturn': isReturn,
   };
 }

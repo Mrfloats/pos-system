@@ -1,5 +1,3 @@
-import 'dart:convert';
-
 import 'package:floatly_till/admin/admin_state.dart';
 import 'package:floatly_till/core/api.dart';
 import 'package:floatly_till/core/local_store.dart';
@@ -10,138 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 
-/// A stand-in for the Floatly API: phone sign-in, refresh tokens that work once, and a dashboard.
-class FakeServer {
-  FakeServer({this.role = 'admin', this.hasPin = true, this.pin = '4321'});
-
-  String role;
-  bool hasPin;
-  String pin;
-  int _n = 0;
-  String? liveRefresh;
-  String? liveAccess;
-  final requests = <String>[];
-  int refreshes = 0;
-  bool loggedOut = false;
-  bool revoked = false;
-  Map<String, String> lastHeaders = {};
-
-  http.Response _json(Object body, [int status = 200]) => http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
-
-  Map<String, dynamic> _session() {
-    _n++;
-    liveAccess = 'access-$_n';
-    liveRefresh = 'rt_${'r' * 30}$_n';
-    return {
-      'accessToken': liveAccess,
-      'refreshToken': liveRefresh,
-      'expiresIn': 900,
-      'user': {'id': 'u1', 'email': 'admin@shop.test', 'fullName': 'Admin User', 'phone': null},
-      'tenant': {'id': 't1', 'name': 'Corner Shop', 'baseCurrency': 'USD', 'timezone': 'Africa/Harare'},
-      'membership': {
-        'id': 'm1',
-        'role': role,
-        'staffCode': 'ADM-001',
-        'hasPin': hasPin,
-        'permissions': ['dashboard.view', 'sales.view', 'inventory.view'],
-      },
-      'businesses': [
-        {'tenantId': 't1', 'name': 'Corner Shop', 'businessType': 'retail', 'role': role},
-      ],
-    };
-  }
-
-  Future<http.Response> handle(http.Request req) async {
-    final path = req.url.path.replaceFirst('/api/v1', '');
-    requests.add('${req.method} $path');
-    lastHeaders = req.headers;
-    final body = req.body.isEmpty ? const <String, dynamic>{} : (jsonDecode(req.body) as Map).cast<String, dynamic>();
-
-    if (path == '/auth/login') {
-      if (body['password'] != 'password123') return _json({'statusCode': 401, 'message': 'Wrong email or password'}, 401);
-      if (role == 'cashier') {
-        return _json({'statusCode': 403, 'code': 'not_for_role', 'message': 'Managing the business on a phone is for owners, admins and managers. Sign in on a till with your PIN instead.'}, 403);
-      }
-      expect(body['session'], 'mobile');
-      return _json(_session());
-    }
-    if (path == '/auth/refresh') {
-      refreshes++;
-      if (revoked || body['refreshToken'] != liveRefresh) return _json({'statusCode': 401, 'message': 'Your session has ended. Sign in again.'}, 401);
-      return _json(_session());
-    }
-    if (path == '/auth/logout') {
-      loggedOut = true;
-      liveRefresh = null;
-      return _json({'ok': true});
-    }
-    if (req.headers['Authorization'] != 'Bearer $liveAccess') return _json({'statusCode': 401, 'message': 'Session expired or invalid'}, 401);
-    expect(req.headers['X-Floatly-Client'], 'mobile');
-    switch (path) {
-      case '/stores':
-        return _json([
-          {'id': 's1', 'name': 'Main Store', 'code': 'MAIN', 'type': 'shop', 'active': true},
-          {'id': 's2', 'name': 'Depot', 'code': 'DEP', 'type': 'warehouse', 'active': true},
-        ]);
-      case '/currencies':
-        return _json([
-          {'code': 'USD', 'symbol': r'$', 'isBase': true},
-        ]);
-      case '/auth/verify-pin':
-        if (req.headers['X-Floatly-Pin'] != pin) return _json({'statusCode': 403, 'code': 'wrong_pin', 'message': 'Wrong PIN'}, 403);
-        return _json({'ok': true});
-      case '/auth/pin':
-        if (body['password'] != 'password123') return _json({'statusCode': 400, 'message': 'Wrong password'}, 400);
-        pin = body['pin'] as String;
-        hasPin = true;
-        return _json({'ok': true});
-      case '/dashboard':
-        final depot = req.url.queryParameters['storeId'] == 's2';
-        return _json({
-          'date': '2026-11-10',
-          'currencyCode': 'USD',
-          'storeId': req.url.queryParameters['storeId'],
-          'today': {'gross': depot ? '0.00' : '1234.50', 'sales': depot ? 0 : 41, 'returns': depot ? 0 : 2, 'averageBasket': depot ? '0.00' : '31.20'},
-          'yesterday': {'gross': '1000.00', 'sales': 30, 'changePercent': depot ? null : 23.5},
-          'lastWeek': {'day': '2026-11-03', 'gross': '1500.00', 'sales': 50, 'changePercent': depot ? null : -17.7},
-          'trend': [
-            for (var i = 3; i <= 10; i++) {'day': '2026-11-${i.toString().padLeft(2, '0')}', 'sales': i, 'returns': 0, 'gross': i == 10 ? (depot ? '0.00' : '1234.50') : '${i * 100}.00'},
-          ],
-          'topProducts': depot
-              ? []
-              : [
-                  {'variantId': 'v1', 'name': 'Rice 5kg', 'quantity': '12.000', 'revenue': '120.00'},
-                  {'variantId': 'v2', 'name': 'Cooking oil 2L', 'quantity': '8.500', 'revenue': '68.00'},
-                ],
-          'paymentMethods': depot
-              ? []
-              : [
-                  {'method': 'cash', 'amount': '900.00'},
-                  {'method': 'mobile', 'amount': '334.50'},
-                ],
-          'lowStock': {
-            'total': depot ? 0 : 7,
-            'items': depot
-                ? []
-                : [
-                    {'variantId': 'v3', 'name': 'Sugar 2kg', 'onHand': '3.000', 'reorderLevel': '10.000'},
-                  ],
-          },
-        });
-    }
-    return _json({'statusCode': 404, 'message': 'Not found'}, 404);
-  }
-}
-
-Future<(AdminState, FakeServer, MemoryStore)> signedIn({FakeServer? server, DateTime Function()? clock}) async {
-  final fake = server ?? FakeServer();
-  Api.httpClient = MockClient(fake.handle);
-  final store = MemoryStore();
-  final admin = AdminState(store, clock: clock);
-  await admin.init();
-  expect(await admin.signIn(server: 'http://localhost:4000', email: 'admin@shop.test', password: 'password123'), isNull);
-  return (admin, fake, store);
-}
+import 'admin_support.dart';
 
 void main() {
   tearDown(() => Api.httpClient = http.Client());
@@ -402,10 +269,3 @@ void main() {
   });
 }
 
-/// Lets real network futures (the fake server) finish, then the frames they cause.
-Future<void> settle(WidgetTester tester) async {
-  for (var i = 0; i < 5; i++) {
-    await tester.runAsync(() => Future<void>.delayed(const Duration(milliseconds: 30)));
-    await tester.pump(const Duration(milliseconds: 50));
-  }
-}

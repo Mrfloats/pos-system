@@ -206,3 +206,91 @@ class SectionCard extends StatelessWidget {
     ),
   );
 }
+
+String _two(int n) => n.toString().padLeft(2, '0');
+
+/// A day as the API wants it: 2026-11-10.
+String isoDay(DateTime d) => '${d.year}-${_two(d.month)}-${_two(d.day)}';
+
+/// An API timestamp in the phone's time: "10 Nov, 14:05" (with the year when it isn't this one).
+String shortDateTime(Object? iso) {
+  final d = DateTime.tryParse('$iso')?.toLocal();
+  if (d == null) return '';
+  final year = d.year == DateTime.now().year ? '' : ' ${d.year}';
+  return '${d.day} ${_months[d.month - 1]}$year, ${_two(d.hour)}:${_two(d.minute)}';
+}
+
+/// A filter shown as a chip that opens a menu of choices. [value] null means "any".
+class FilterMenu<T> extends StatelessWidget {
+  const FilterMenu({super.key, required this.label, required this.value, required this.options, required this.onChanged, this.icon});
+
+  /// What the chip says when nothing is chosen ("Cashier").
+  final String label;
+  final T? value;
+
+  /// Choices in order: value → what to call it. A null value is "any".
+  final List<(T?, String)> options;
+  final ValueChanged<T?> onChanged;
+  final IconData? icon;
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final chosen = options.where((o) => o.$1 == value && o.$1 != null).firstOrNull;
+    final active = chosen != null;
+    return PopupMenuButton<int>(
+      tooltip: label,
+      onSelected: (i) => onChanged(options[i].$1),
+      itemBuilder: (_) => [
+        for (final (i, o) in options.indexed) CheckedPopupMenuItem(value: i, checked: o.$1 == value, child: Text(o.$2)),
+      ],
+      child: Container(
+        constraints: const BoxConstraints(minHeight: 40),
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: active ? scheme.primary.withValues(alpha: 0.12) : null,
+          border: Border.all(color: active ? scheme.primary : scheme.outlineVariant),
+          borderRadius: BorderRadius.circular(20),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[Icon(icon, size: 16, color: active ? scheme.primary : scheme.onSurfaceVariant), const SizedBox(width: 6)],
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 160),
+              child: Text(
+                chosen?.$2 ?? label,
+                overflow: TextOverflow.ellipsis,
+                style: TextStyle(fontSize: 13.5, fontWeight: FontWeight.w600, color: active ? scheme.primary : scheme.onSurface),
+              ),
+            ),
+            Icon(Icons.arrow_drop_down, size: 20, color: active ? scheme.primary : scheme.onSurfaceVariant),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// A small coloured label with an icon: Voided, Refund, Low…
+class Tag extends StatelessWidget {
+  const Tag({super.key, required this.icon, required this.label, required this.color});
+
+  final IconData icon;
+  final String label;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+    decoration: BoxDecoration(color: color.withValues(alpha: 0.12), borderRadius: BorderRadius.circular(10)),
+    child: Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 12, color: color),
+        const SizedBox(width: 3),
+        Text(label, style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.w700, color: color)),
+      ],
+    ),
+  );
+}

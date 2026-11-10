@@ -16,7 +16,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 
-import 'admin_test.dart' show FakeServer, settle, signedIn;
+import 'admin_support.dart';
 
 /// Real fonts instead of the test font's boxes.
 Future<void> loadFonts() async {
@@ -106,5 +106,27 @@ void main() {
     addTearDown(admin.dispose);
     await tester.pumpWidget(AdminScope(state: admin, child: MaterialApp(theme: buildTheme(Brightness.light), home: const AdminLoginScreen())));
     await shot('sign-in');
+  }, skip: !on);
+
+  testWidgets('sales activity', (tester) async {
+    await open(tester, const Size(412, 900));
+    await goTo(tester, 'Sales Activity');
+    await shot('sales');
+    await tester.tap(find.text('Cashier'));
+    await tester.pumpAndSettle();
+    await shot('sales-filter');
+    await tapAndSettle(tester, find.text('Chipo Cashier').last);
+    await tapAndSettle(tester, find.text('S-00103'));
+    await shot('sale');
+    await tester.scrollUntilVisible(find.text('View receipt'), 300, scrollable: find.byType(Scrollable).last);
+    await tester.tap(find.text('View receipt'));
+    await tester.pumpAndSettle();
+    await shot('receipt');
+  }, skip: !on);
+
+  testWidgets('receipts', (tester) async {
+    await open(tester, const Size(412, 900));
+    await goTo(tester, 'Receipts');
+    await shot('receipts');
   }, skip: !on);
 }

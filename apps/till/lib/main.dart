@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import 'admin/admin_lock_screens.dart';
@@ -81,15 +83,20 @@ class _HomeState extends State<_Home> with WidgetsBindingObserver {
   bool _signedIn = false;
   bool _adminOpen = false;
   DateTime? _leftAt;
+  Timer? _idleClock;
+  static const _idleCheck = Duration(seconds: 15);
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
+    // Counts untouched time towards locking the admin area.
+    _idleClock = Timer.periodic(_idleCheck, (_) => AdminScope.read(context).tick(_idleCheck));
   }
 
   @override
   void dispose() {
+    _idleClock?.cancel();
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }

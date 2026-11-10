@@ -12,6 +12,7 @@ import 'package:floatly_till/admin/admin_state.dart';
 import 'package:floatly_till/core/api.dart';
 import 'package:floatly_till/core/local_store.dart';
 import 'package:floatly_till/core/money.dart';
+import 'package:floatly_till/models/receipt.dart';
 import 'package:floatly_till/models/sale.dart';
 import 'package:floatly_till/state/till_state.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -172,6 +173,21 @@ void main() {
       expect(all['today'], containsPair('sales', isA<int>()));
       final one = await admin.call((api) => api.get('/dashboard', query: {'storeId': admin.stores.first.id})) as Map;
       expect(one['storeId'], admin.stores.first.id);
+
+      // Sales activity: the list with its total, a filter, one sale in full, and its receipt.
+      final sales = await admin.call((api) => api.get('/sales', query: {'excludeQuotations': 'true', 'pageSize': '5'})) as Map;
+      expect(sales['totalBase'], isA<String>());
+      final listed = (sales['items'] as List).cast<Map>();
+      expect(listed, isNotEmpty);
+      expect(listed.first['paymentMethods'], isA<List>());
+      final cash = await admin.call((api) => api.get('/sales', query: {'paymentMethod': 'cash', 'cashierId': listed.first['salespersonId'] as String})) as Map;
+      expect((cash['total'] as int), greaterThan(0));
+      final sale = (await admin.call((api) => api.get('/sales/${listed.first['id']}')) as Map).cast<String, dynamic>();
+      final receipt = Receipt.fromApiSale(sale, businessName: s.businessName, symbolOf: admin.symbolFor);
+      expect(receipt.lines, isNotEmpty);
+      expect(receipt.heading, contains(sale['number'] as String));
+      expect(receipt.symbol, isNot(receipt.currencyCode));
+      expect(receipt.cashier, isNot('—'));
 
       // The access token runs out: the next call swaps the refresh token and carries on.
       now = now.add(const Duration(minutes: 20));

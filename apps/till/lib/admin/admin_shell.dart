@@ -5,6 +5,7 @@ import '../widgets/common.dart';
 import 'admin_state.dart';
 import 'admin_widgets.dart';
 import 'dashboard_screen.dart';
+import 'sales_screens.dart';
 
 /// One entry in the admin menu. It is shown only to people with [permission]
 /// (the API checks again on every request, so hiding it is a courtesy, not the lock).
@@ -20,6 +21,8 @@ class AdminSection {
 /// The admin menu, top to bottom.
 final adminSections = <AdminSection>[
   AdminSection(id: 'dashboard', label: 'Dashboard', icon: Icons.space_dashboard_outlined, permission: 'dashboard.view', builder: (_) => const DashboardScreen()),
+  AdminSection(id: 'sales', label: 'Sales Activity', icon: Icons.point_of_sale_outlined, permission: 'sales.view', builder: (_) => const SalesActivityScreen()),
+  AdminSection(id: 'receipts', label: 'Receipts', icon: Icons.receipt_long_outlined, permission: 'sales.view', builder: (_) => const ReceiptsScreen()),
 ];
 
 /// What stays on the web backoffice, and says so.

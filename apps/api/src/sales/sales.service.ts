@@ -1,5 +1,5 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
-import { and, asc, count, desc, eq, ilike, inArray, or, SQL, sql } from 'drizzle-orm';
+import { and, asc, count, desc, eq, ilike, inArray, ne, or, SQL, sql } from 'drizzle-orm';
 import type { SystemKey } from '../accounting/chart.js';
 import { LedgerService, localDate } from '../accounting/ledger.service.js';
 import { divRound, formatFixed, fromCents, parseFixed, sum, toBase, toCents } from '../accounting/money.js';
@@ -918,13 +918,29 @@ export class SalesService {
       if (q.status) where.push(eq(sales.status, q.status));
       if (q.storeId) where.push(eq(sales.storeId, q.storeId));
       if (q.customerId) where.push(eq(sales.customerId, q.customerId));
+      if (q.excludeQuotations === 'true') where.push(ne(sales.type, 'quotation'));
+      if (q.cashierId) where.push(eq(sales.salespersonId, q.cashierId));
+      if (q.paymentMethod) where.push(sql`EXISTS (SELECT 1 FROM sale_payments p WHERE p.sale_id = ${sales.id} AND p.method = ${q.paymentMethod})`);
       if (q.from) where.push(sql`(${sales.soldAt} AT TIME ZONE ${tz})::date >= ${q.from}::date`);
       if (q.to) where.push(sql`(${sales.soldAt} AT TIME ZONE ${tz})::date <= ${q.to}::date`);
       if (q.search) where.push(or(ilike(sales.number, likeEscape(q.search)), ilike(sales.customerName, likeEscape(q.search))));
       const condition = and(...where);
-      const [{ total }] = await tx.select({ total: count() }).from(sales).where(condition);
+      // What the whole filtered list comes to (not just this page): completed sales less completed returns, base currency.
+      const [{ total, totalBase }] = await tx
+        .select({
+          total: count(),
+          totalBase: sql<string>`coalesce(sum(CASE WHEN ${sales.status} <> 'completed' THEN 0 WHEN ${sales.type} = 'sale' THEN ${sales.totalBase} WHEN ${sales.type} = 'return' THEN -${sales.totalBase} ELSE 0 END), 0)::numeric(14,2)::text`,
+        })
+        .from(sales)
+        .where(condition);
       const rows = await tx
-        .select({ sale: sales, storeName: stores.name, deviceName: devices.name, salesperson: users.fullName })
+        .select({
+          sale: sales,
+          storeName: stores.name,
+          deviceName: devices.name,
+          salesperson: users.fullName,
+          paymentMethods: sql<string[]>`coalesce((SELECT array_agg(DISTINCT p.method::text ORDER BY p.method::text) FROM sale_payments p WHERE p.sale_id = ${sales.id}), '{}')`,
+        })
         .from(sales)
         .innerJoin(stores, eq(stores.id, sales.storeId))
         .leftJoin(devices, eq(devices.id, sales.deviceId))
@@ -934,8 +950,9 @@ export class SalesService {
         .limit(q.pageSize)
         .offset((q.page - 1) * q.pageSize);
       return {
-        items: rows.map((r) => ({ ...r.sale, storeName: r.storeName, deviceName: r.deviceName, salesperson: r.salesperson })),
+        items: rows.map((r) => ({ ...r.sale, storeName: r.storeName, deviceName: r.deviceName, salesperson: r.salesperson, paymentMethods: r.paymentMethods })),
         total,
+        totalBase,
         page: q.page,
         pageSize: q.pageSize,
       };

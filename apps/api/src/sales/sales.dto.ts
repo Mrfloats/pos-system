@@ -123,6 +123,12 @@ export class SaleQuery extends ListQuery {
   @IsOptional() @IsIn(SALE_STATUSES) status?: (typeof SALE_STATUSES)[number];
   @IsOptional() @IsUUID() storeId?: string;
   @IsOptional() @IsUUID() customerId?: string;
+  /** Leave quotations out: only sales and returns. */
+  @IsOptional() @IsIn(['true', 'false']) excludeQuotations?: 'true' | 'false';
+  /** The person who made the sale (a user id, as in the staff list). */
+  @IsOptional() @IsUUID() cashierId?: string;
+  /** Sales paid, at least partly, this way. */
+  @IsOptional() @IsIn(PAYMENT_METHODS) paymentMethod?: PaymentMethod;
   @IsOptional() @IsDay() from?: string;
   @IsOptional() @IsDay() to?: string;
 }
