@@ -86,13 +86,81 @@ New businesses don't open straight away. The sign-up page sends a **request** wi
 - Each business is paid up to a date. **Record payment** on its console page adds one month or year. In the last week the business sees a reminder; after the date it has 7 days' grace, then everything except signing in and its Subscription page is refused (HTTP 402) until a payment is recorded. Staff can also suspend a business.
 - Businesses can't change their own subscription: a database trigger only lets Floatly staff change those columns. Businesses that existed before subscriptions have no plan and no end date (complimentary) until staff set one.
 
+## Managing the business from a phone
+
+Owners, admins and managers can run the business from the same Flutter app the tills use (`apps/till`), against the same API, data and permissions as the backoffice. On a new device, tap **Manage your business instead** on the setup screen; on a paired till, choose **Manage the business** from the PIN screen's menu. Sign in with email and password. Cashiers, waiters, stock clerks and accountants are refused by the API (`not_for_role`) and keep using the till or the backoffice.
+
+The side menu shows the person's name, role and staff ID (e.g. "Admin — ID: ADM-001") and only the sections their permissions allow:
+
+| Section | What it does |
+| --- | --- |
+| Dashboard | Today's takings, transactions, average basket, change on yesterday and the same day last week, 8-day chart, top products, payment methods, low stock, requests waiting |
+| Sales Activity | Transactions with server-side filters (dates, cashier, payment method, kind, branch, search) and the total for the filtered list; a transaction's items, payments and refunds |
+| Inventory | Search or scan; stock per branch; change the selling price (PIN), cost and reorder level; adjust stock with a reason; add a product with opening stock |
+| Customers | Search; what they owe, credit left, spending, unpaid invoices, purchases; add and edit |
+| Suppliers | Contact details, what's owed, unpaid bills and latest deliveries; add and edit |
+| Damaged Stock | Write off damaged, expired or spoiled stock with a reason; history with value at cost |
+| Returns | Refund and void requests from the tills: approve (PIN) or turn down with a note |
+| Reports | Sales by day, product, category and cashier; profit (with expenses and net profit from the books); stock value. Charts, tables, share as PDF or CSV |
+| Receipts | Find any receipt by number or customer; print again (receipt printer or print dialog) or share as PDF |
+
+The bell lists low stock, requests waiting, large refunds (over three times an average sale), voids and yesterday's takings. The store picker in the top bar narrows every screen to one branch.
+
+### Permissions
+
+Every endpoint checks a permission on the API as well as the role; hiding a button in the app is never the only lock. A role starts with the permissions below. An **owner** can untick any of them for one person on the backoffice **Staff** page; owners always keep every permission. A change applies to that person's next request.
+
+| Permission | Lets someone | Starts with |
+| --- | --- | --- |
+| `dashboard.view` | see the dashboard and the bell | owner, admin, manager |
+| `sales.view` | see sales and receipts | owner, admin, manager, cashier, waiter, accountant |
+| `sales.void` | void sales | owner, admin, manager |
+| `returns.create` | refund sales | owner, admin, manager |
+| `returns.request` | ask a manager for a refund or void (till) | owner, admin, manager, cashier, waiter |
+| `returns.approve` | approve or turn down those requests | owner, admin, manager |
+| `inventory.view` | see stock levels and movements | everyone |
+| `inventory.adjust` | receive, adjust, count and transfer stock | owner, admin, manager, stock clerk |
+| `damaged.record` | write off damaged stock | owner, admin, manager, stock clerk |
+| `products.edit` | add and edit products | owner, admin, manager |
+| `products.price` | change selling prices | owner, admin, manager |
+| `customers.view` / `customers.edit` | see / add and edit customers | everyone / till staff and managers |
+| `suppliers.view` / `suppliers.edit` | see / add and edit suppliers | everyone / managers and accountants |
+| `reports.view` | sales and profit reports | owner, admin, manager, accountant |
+| `reports.stock` | stock reports and valuation | owner, admin, manager, stock clerk, accountant |
+| `audit.view` | the audit trail | owner, admin |
+
+The list is in `apps/api/src/common/permissions.ts`.
+
+### Security
+
+- **Sessions:** a phone gets a 15-minute access token and a refresh token, kept in the phone's keychain and swapped for a new one each time. A refresh token used again after it was replaced ends the whole sign-in. Sign-ins unused for 30 days end. Logging out ends it on the server and removes the tokens, the saved figures and anything queued from the phone.
+- **PIN:** after a first sign-in the app offers to set a PIN, which then opens the app and locks it again after 5 minutes untouched. Changing a price, refunding, voiding and approving a request from a phone need the PIN again (`X-Floatly-Pin`).
+- **Lockout:** five wrong passwords or PINs in a row lock the account for 15 minutes.
+- **Audit:** every change records who, their role, the app (web, till or mobile), the store, and the value before and after (prices, stock levels, request decisions). See it with `GET /audit-logs`.
+
+### Offline
+
+Screens are saved as they load. Without a connection the app shows the saved copy with a banner saying when it was saved. Stock adjustments and write-offs made offline wait on the phone and upload when the connection is back; each carries an id, so one sent twice is recorded once. If Floatly turns one down, Floatly wins and the app says why. Price changes and approvals need a connection.
+
+### Stays on the web
+
+Staff, roles and permissions; tax, currency and business settings; imports, exports and backups; removing past transactions. The app's menu says so under **More on the web**.
+
+### Settings
+
+API environment variables, all optional: `MOBILE_ACCESS_SECONDS` (900), `REFRESH_IDLE_DAYS` (30), `LOGIN_MAX_FAILURES` (5), `LOGIN_LOCK_MINUTES` (15).
+
+### Putting it live
+
+The API needs a redeploy, which applies migrations `0017` (permissions and audit), `0018` (phone sign-in, lockout, staff IDs) and `0019` (refund and void requests). Tills need the new app build for cashiers to ask for refunds and voids.
+
 ## Tests
 
 ```bash
 npm run test:api
 ```
 
-The 96 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices.
+The 140 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 
@@ -111,7 +179,11 @@ apps/
       customers/          customers
       inventory/          stock levels, movements, transfers, stock takes
       accounting/         ledger, chart of accounts, invoices, bills, payments, expenses, reports
-      sales/              sales, returns, quotations, kitchen, shifts, cash transfers, import, sales reports
+      sales/              sales, returns, quotations, kitchen, shifts, cash transfers, import, sales reports,
+                          refund and void requests
+      dashboard/          the phone's dashboard
+      notifications/      the phone's bell
+      common/permissions.ts  every permission and the roles that start with it
       till/               the till app's catalog download (PIN sign-in is in auth/)
     test/                 end-to-end tests
   backoffice/
@@ -122,6 +194,7 @@ apps/
   till/                   Flutter till app (see apps/till/README.md)
     lib/state/            pairing, PIN sign-in, offline catalog, basket, shifts, upload queue
     lib/screens/          setup, PIN, till, payment, receipt, sales, refund, shifts
+    lib/admin/            managing the business from a phone (see above)
 docker/postgres/init.sql  creates the database and the two roles
 docker-compose.yml        PostgreSQL 16 and Redis 7 for development
 ```

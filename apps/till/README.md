@@ -110,13 +110,24 @@ These check the money maths and basket pricing against the same baskets the API'
 FLOATLY_LIVE_API=http://localhost:4000 flutter test test/live_api_test.dart
 ```
 
-It adds a till and a few sales to that database, so point it at a test copy.
+It adds a till and a few sales to that database, so point it at a test copy. The same file also runs the phone admin area against the real API: sign-in and token refresh, the dashboard, stock and price changes with the PIN, customers and suppliers, every report and its exports, a refund a cashier asks for and a manager approves, notifications, and a stock change made offline that uploads once.
+
+The admin area's own tests (`test/admin_*_test.dart`) run against a stand-in API in `test/admin_support.dart`. To look at its screens without a phone:
+
+```bash
+FLOATLY_SHOTS=1 flutter test test/screenshots_test.dart --update-goldens
+```
+
+The pictures land in `build/shots`.
 
 ## Project layout
 
 ```
 lib/
-  main.dart               starts the app: setup → PIN → till
+  main.dart               starts the app: setup → PIN → till, or the admin area when an owner or manager is signed in
+  admin/                  managing the business from a phone: sign-in and PIN lock (admin_state.dart), menu,
+                          dashboard, sales, inventory, customers, suppliers, damaged stock, returns, reports,
+                          receipts, notifications; offline copies and the upload queue (see the main README)
   core/
     api.dart              calls the Floatly API
     money.dart            exact money maths, the same as the API's
@@ -147,7 +158,8 @@ tool/render_icons.dart    draws the app icon (then `dart run flutter_launcher_ic
 | `GET /till/catalog?storeId=` | Everything to sell offline, in one download |
 | `POST /sales` | A sale, with `clientId` so a retry is recorded once |
 | `GET /shifts`, `POST /shifts`, `POST /shifts/:id/close` | Shifts and cash-up |
-| `GET /sales/:id`, `POST /sales/:id/returns` | Refunds |
+| `GET /sales/:id`, `POST /sales/:id/returns` | Refunds (managers) |
+| `POST /sales/:id/requests`, `GET /sale-requests?mine=true`, `POST /sale-requests/:id/cancel` | Cashiers asking a manager for a refund or void |
 | `POST /customers` | Adding a customer at the till |
 
 ## Next steps

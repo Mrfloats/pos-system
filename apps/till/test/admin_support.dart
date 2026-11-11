@@ -110,6 +110,7 @@ class FakeServer {
       return _json({'items': list, 'total': list.length, 'page': 1, 'pageSize': 30});
     }
     if (path == '/inventory/movements' && req.method == 'POST') {
+      if (refuseMovements != null) return _json({'statusCode': 400, 'message': refuseMovements}, 400);
       posted.add(body);
       for (final l in (body['lines'] as List).cast<Map>()) {
         final item = items[l['variantId']]!;
@@ -196,6 +197,43 @@ class FakeServer {
     }
     return null;
   }
+
+  /// The connection is down: every request fails before reaching the server.
+  bool down = false;
+
+  /// Stock changes are turned down (say, the store was closed meanwhile).
+  String? refuseMovements;
+
+  /// The bell's list.
+  List<Map<String, dynamic>> bell = [
+    {
+      'id': 'request-rq-1',
+      'kind': 'request',
+      'title': 'Chipo Cashier asks to refund USD 10.00 on S-00103',
+      'body': '"Rice bag torn"',
+      'at': '2026-11-10T11:00:00.000Z',
+      'attention': true,
+      'link': {'to': 'request', 'id': 'rq-1'},
+    },
+    {
+      'id': 'low-stock-all-7',
+      'kind': 'low_stock',
+      'title': '7 items running low',
+      'body': 'Sugar 2kg at Main Store and 6 more',
+      'at': '2026-11-10T09:30:00.000Z',
+      'attention': true,
+      'link': {'to': 'low_stock'},
+    },
+    {
+      'id': 'eod-2026-11-09',
+      'kind': 'end_of_day',
+      'title': "Monday's takings: USD 1000.00",
+      'body': '30 sales',
+      'at': '2026-11-09T22:00:00.000Z',
+      'attention': false,
+      'link': {'to': 'daily_report'},
+    },
+  ];
 
   /// Every report asked for: path and query.
   final reportQueries = <(String, Map<String, String>)>[];
@@ -443,6 +481,8 @@ class FakeServer {
   }
 
   Future<http.Response> handle(http.Request req) async {
+    // No connection: the request never arrives.
+    if (down) throw http.ClientException('Network is unreachable');
     final path = req.url.path.replaceFirst('/api/v1', '');
     requests.add('${req.method} $path');
     lastHeaders = req.headers;
@@ -554,6 +594,10 @@ class FakeServer {
     if (asked != null) return asked;
     final report = _reports(req, path);
     if (report != null) return report;
+    if (path == '/notifications') return _json({'items': bell, 'generatedAt': '2026-11-10T12:00:00.000Z'});
+    if (path.startsWith('/sale-requests/') && req.method == 'GET') {
+      return _json(saleRequests.firstWhere((r) => r['id'] == path.substring('/sale-requests/'.length)));
+    }
     if (path.startsWith('/sales/')) {
       final sale = sales.where((s) => s['id'] == path.substring(7)).firstOrNull;
       if (sale == null) return _json({'statusCode': 404, 'message': 'Sale not found'}, 404);

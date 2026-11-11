@@ -2461,3 +2461,89 @@ describe('refund and void requests', () => {
     expect(cashierUserId).toBeTruthy();
   });
 });
+
+describe('notifications', () => {
+  let ownerT: Record<string, string>;
+  let managerT: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let storeId: string;
+  let branchId: string;
+  let bread: string;
+  let tv: string;
+  const N = '/api/v1/notifications';
+  const kinds = (body: any) => body.items.map((i: any) => i.kind);
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Bell Shop', 'bell@example.com')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    branchId = (await http.post('/api/v1/stores').set(ownerT).send({ name: 'Bell Branch', code: 'BB' }).expect(201)).body.id;
+    bread = (await http.post('/api/v1/products').set(ownerT).send({ name: 'Bread', variants: [{ price: '2.00', reorderLevel: 10 }] }).expect(201)).body.variants[0].id;
+    tv = (await http.post('/api/v1/products').set(ownerT).send({ name: 'Television', variants: [{ price: '300.00' }] }).expect(201)).body.variants[0].id;
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId: bread, quantity: 12 }, { variantId: tv, quantity: 3 }] }).expect(201);
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId: branchId, type: 'receive', lines: [{ variantId: bread, quantity: 50 }] }).expect(201);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'bell-manager@example.com', fullName: 'Bell Manager', password: 'password123', role: 'manager' }).expect(201);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'bell-cashier@example.com', fullName: 'Bell Cashier', password: 'password123', role: 'cashier' }).expect(201);
+    managerT = auth((await http.post('/api/v1/auth/login').send({ email: 'bell-manager@example.com', password: 'password123' }).expect(200)).body.accessToken);
+    cashierT = auth((await http.post('/api/v1/auth/login').send({ email: 'bell-cashier@example.com', password: 'password123' }).expect(200)).body.accessToken);
+
+    const sell = async (variantId: string, quantity: number, amount: string, t = cashierT) =>
+      (await http.post('/api/v1/sales').set(t).send({ storeId, lines: [{ variantId, quantity }], payments: [{ method: 'cash', amount }] }).expect(201)).body;
+    // Bread sales leave 6 in the shop: under its reorder level of 10.
+    for (let i = 0; i < 6; i++) await sell(bread, 1, '2');
+    // A television sold yesterday and refunded today: a large refund.
+    const tvSale = await sell(tv, 1, '300', ownerT);
+    await http.post(`/api/v1/sales/${tvSale.id}/returns`).set(ownerT).send({ lines: [{ lineId: tvSale.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Screen cracked' }).expect(201);
+    // A sale voided.
+    const voided = await sell(bread, 1, '2', ownerT);
+    await http.post(`/api/v1/sales/${voided.id}/void`).set(ownerT).expect(201);
+    // A request waiting.
+    const asked = await sell(bread, 1, '2');
+    await http.post(`/api/v1/sales/${asked.id}/requests`).set(cashierT).send({ kind: 'void', reason: 'Wrong item' }).expect(201);
+    // Takings yesterday.
+    const db = ownerDb();
+    try {
+      await db.query(`UPDATE sales SET sold_at = now() - interval '1 day' WHERE id = $1`, [tvSale.id]);
+    } finally {
+      await db.end();
+    }
+  });
+
+  it('tells a manager what needs a look, newest first', async () => {
+    const res = await http.get(N).set(managerT).expect(200);
+    expect(new Set(kinds(res.body))).toEqual(new Set(['low_stock', 'request', 'large_refund', 'void', 'end_of_day']));
+    const at = res.body.items.map((i: any) => i.at);
+    expect([...at].sort().reverse()).toEqual(at);
+    const byKind = Object.fromEntries(res.body.items.map((i: any) => [i.kind, i]));
+    // Low in the shop (4 left), though the branch has 50.
+    expect(byKind.low_stock).toMatchObject({ title: '1 item running low', body: 'Bread at Main Store', attention: true, link: { to: 'low_stock' } });
+    expect(byKind.request.title).toBe('Bell Cashier asks to void on ' + byKind.request.title.split(' on ')[1]);
+    expect(byKind.request).toMatchObject({ body: '"Wrong item"', link: { to: 'request' } });
+    expect(byKind.large_refund.title).toMatch(/^Large refund: USD 300\.00 on S-/);
+    expect(byKind.large_refund.body).toContain('"Screen cracked"');
+    expect(byKind.void).toMatchObject({ body: 'By Bell Shop Owner · USD 2.00', attention: false, link: { to: 'sale' } });
+    expect(byKind.end_of_day.title).toMatch(/'s takings: USD 300\.00$/);
+    expect(byKind.end_of_day.body).toBe('1 sale');
+    // Ids stay the same between calls, so the app can tell what's new.
+    const again = await http.get(N).set(managerT).expect(200);
+    expect(again.body.items.map((i: any) => i.id)).toEqual(res.body.items.map((i: any) => i.id));
+  });
+
+  it('narrows to one store', async () => {
+    const branch = await http.get(N).query({ storeId: branchId }).set(managerT).expect(200);
+    expect(kinds(branch.body)).toEqual(['end_of_day']);
+    const shop = await http.get(N).query({ storeId }).set(managerT).expect(200);
+    expect(shop.body.items.find((i: any) => i.kind === 'low_stock').body).toBe('Bread');
+    expect(branch.body.items[0].body).toBe('No sales');
+  });
+
+  it('keeps requests to those who decide them, and the bell from till staff', async () => {
+    await http.patch('/api/v1/staff/' + (await http.get('/api/v1/staff').set(ownerT)).body.find((s: any) => s.fullName === 'Bell Manager').id)
+      .set(ownerT)
+      .send({ deniedPermissions: ['returns.approve'] })
+      .expect(200);
+    expect(kinds((await http.get(N).set(managerT).expect(200)).body)).not.toContain('request');
+    await http.get(N).set(cashierT).expect(403);
+    const other = auth((await signup('Quiet Shop', 'quiet-bell@example.com')).accessToken);
+    expect(kinds((await http.get(N).set(other).expect(200)).body)).toEqual(['end_of_day']);
+  });
+});

@@ -210,4 +210,22 @@ void main() {
     await goTo(tester, 'Reports');
     await shot('report-wide');
   }, skip: !on);
+
+  testWidgets('notifications and offline', (tester) async {
+    final (admin, fake) = await open(tester, const Size(412, 900));
+    await tester.runAsync(() => admin.loadNotifications());
+    await tester.pump();
+    await shot('bell');
+    await tapAndSettle(tester, find.byTooltip('3 new notifications'));
+    await shot('notifications');
+    Navigator.of(tester.element(find.text('Notifications').last)).pop();
+    await tester.pumpAndSettle();
+    fake.down = true;
+    await tester.runAsync(() async {
+      await admin.fetch('/dashboard');
+      await admin.sendOrQueue('/inventory/movements', {'lines': []}, label: 'Rice: 2 written off');
+    });
+    await tester.pump();
+    await shot('offline');
+  }, skip: !on);
 }

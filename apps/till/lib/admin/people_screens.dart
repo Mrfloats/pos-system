@@ -114,13 +114,14 @@ class _PeopleListState extends State<_PeopleList> {
 
   Future<Map<String, dynamic>> _fetch(int page, int pageSize) async {
     final admin = AdminScope.read(context);
-    final res = await admin.call(
-      (api) => api.get(widget.kind.path, query: {
+    final res = await admin.fetch(
+      widget.kind.path,
+      query: {
         'page': '$page',
         'pageSize': '$pageSize',
         if (_search.isNotEmpty) 'search': _search,
         if (widget.kind == _customers && _seesMoney) 'withBalance': 'true',
-      }),
+      },
     );
     return (res as Map).cast();
   }
@@ -287,9 +288,9 @@ class _PartyScreenState extends State<_PartyScreen> {
     setState(() => _error = null);
     try {
       final results = await Future.wait([
-        admin.call((api) => api.get('${widget.kind.path}/${widget.id}${money ? '/summary' : ''}')),
+        admin.fetch('${widget.kind.path}/${widget.id}${money ? '/summary' : ''}'),
         if (_customer && session.can('sales.view'))
-          admin.call((api) => api.get('/sales', query: {'customerId': widget.id, 'excludeQuotations': 'true', 'pageSize': '15'})),
+          admin.fetch('/sales', query: {'customerId': widget.id, 'excludeQuotations': 'true', 'pageSize': '15'}),
       ]);
       if (!mounted) return;
       setState(() {

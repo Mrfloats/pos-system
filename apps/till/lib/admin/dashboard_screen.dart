@@ -43,7 +43,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _error = null;
     });
     try {
-      final res = await admin.call((api) => api.get('/dashboard', query: {'storeId': ?store})) as Map;
+      final res = await admin.fetch('/dashboard', query: {'storeId': ?store}) as Map;
       if (!mounted || (admin.storeId ?? '') != (store ?? '')) return;
       setState(() {
         _data = res.cast();

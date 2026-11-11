@@ -363,4 +363,53 @@ void main() {
     skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
     timeout: const Timeout(Duration(minutes: 2)),
   );
+
+  test(
+    'the bell has real news, and a stock change made offline uploads once when back',
+    () async {
+      final store = MemoryStore();
+      final admin = AdminState(store);
+      await admin.init();
+      expect(await admin.signIn(server: server!, email: 'manager@pos.local', password: 'demo1234'), isNull);
+      await admin.loadNotifications();
+      expect(admin.notifications.map((n) => n['kind']), contains('end_of_day'));
+      expect(admin.unseenCount, admin.notifications.length);
+      await admin.markNotificationsSeen();
+      expect(admin.unseenCount, 0);
+
+      final level = ((await admin.fetch('/inventory/levels', query: {'pageSize': '1'}) as Map)['items'] as List).first as Map;
+      final shop = admin.stores.firstWhere((s) => s.code == 'MAIN');
+      final clientId = '0190a1b2-0000-7000-8000-${DateTime.now().millisecondsSinceEpoch.toString().padLeft(12, '0').substring(0, 12)}';
+      final body = {
+        'storeId': shop.id,
+        'type': 'adjustment',
+        'note': 'Found: live offline test',
+        'lines': [
+          {'variantId': level['variantId'], 'quantity': '1.000', 'clientId': clientId},
+        ],
+      };
+
+      // The connection drops (the server can't be reached).
+      admin.server = 'http://127.0.0.1:9';
+      expect(await admin.sendOrQueue('/inventory/movements', body, label: 'live test'), isFalse);
+      expect(admin.waitingCount, 1);
+      final saved = await admin.fetch('/inventory/levels', query: {'pageSize': '1'}) as Map;
+      expect(admin.offline, isTrue);
+      expect(((saved['items'] as List).first as Map)['variantId'], level['variantId']);
+
+      // Back: it uploads, once.
+      admin.server = server;
+      await admin.syncOutbox();
+      expect(admin.waitingCount, 0);
+      final again = await admin.call((api) => api.post('/inventory/movements', body)) as Map;
+      expect(again['skippedDuplicates'], 1);
+      final moves = await admin.fetch('/inventory/movements', query: {'variantId': level['variantId'] as String, 'type': 'adjustment', 'pageSize': '5'}) as Map;
+      expect((moves['items'] as List).where((m) => (m as Map)['clientId'] == clientId), hasLength(1));
+      await admin.signOut();
+      expect(store.values.keys.where((k) => k.startsWith('admin')), isEmpty);
+      admin.dispose();
+    },
+    skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
 }

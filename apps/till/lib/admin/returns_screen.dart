@@ -46,7 +46,7 @@ class _ReturnsScreenState extends State<ReturnsScreen> {
 
   Future<Map<String, dynamic>> _fetch(String status, int page, int pageSize) async {
     final admin = AdminScope.read(context);
-    final res = await admin.call((api) => api.get('/sale-requests', query: {'status': status, 'page': '$page', 'pageSize': '$pageSize', 'storeId': ?admin.storeId}));
+    final res = await admin.fetch('/sale-requests', query: {'status': status, 'page': '$page', 'pageSize': '$pageSize', 'storeId': ?admin.storeId});
     return (res as Map).cast();
   }
 

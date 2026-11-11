@@ -122,6 +122,19 @@ class AdminState extends ChangeNotifier {
   final DateTime Function() _now;
 
   bool ready = false;
+  bool _disposed = false;
+
+  @override
+  void dispose() {
+    _disposed = true;
+    super.dispose();
+  }
+
+  /// Background work (the bell, uploads) can finish after the admin area is gone.
+  @override
+  void notifyListeners() {
+    if (!_disposed) super.notifyListeners();
+  }
   String server = '';
   AdminSession? session;
   List<StoreInfo> stores = [];
@@ -160,6 +173,36 @@ class AdminState extends ChangeNotifier {
   /// Kept only between signing in and choosing a first PIN, so that step doesn't ask for it again.
   String? _password;
 
+  // ----- Working with a poor connection -----
+
+  /// The last call couldn't reach Floatly.
+  bool offline = false;
+
+  /// What a screen showed instead, when offline: the time it was saved.
+  DateTime? showingSavedFrom;
+
+  /// Screens as they last loaded: key → {at, data}. Cleared on logout.
+  Map<String, dynamic> _cache = {};
+
+  /// Stock changes made offline, oldest first, waiting to upload.
+  List<Map<String, dynamic>> outbox = [];
+
+  /// The server turned down a queued change (it wins): what to tell the person.
+  String? outboxNotice;
+  Future<void>? _syncing;
+
+  // ----- Notifications -----
+
+  /// The bell's list, newest first.
+  List<Map<String, dynamic>> notifications = [];
+
+  /// The newest notification time the person has seen; newer ones count on the bell.
+  String? _seenUpTo;
+  Duration _sincePoll = Duration.zero;
+
+  int get unseenCount => notifications.where((n) => _seenUpTo == null || (n['at'] as String).compareTo(_seenUpTo!) > 0).length;
+  int get waitingCount => outbox.where((o) => o['error'] == null).length;
+
   bool get signedIn => session != null;
 
   /// True right after signing in without a PIN yet: time to offer one.
@@ -186,12 +229,17 @@ class AdminState extends ChangeNotifier {
         _refreshToken = refresh;
         // Whoever opens the app proves who they are first.
         locked = true;
+        final cache = await store.readJson('admin_cache');
+        if (cache is Map) _cache = cache.cast();
       } catch (_) {
         // Saved by a version that no longer reads: sign in again.
         session = null;
         await _forget();
       }
     }
+    final queued = await store.readJson('admin_outbox');
+    if (queued is List) outbox = [for (final q in queued) (q as Map).cast<String, dynamic>()];
+    _seenUpTo = await store.read('admin_seen');
     ready = true;
     notifyListeners();
   }
@@ -210,10 +258,15 @@ class AdminState extends ChangeNotifier {
       storeId = null;
       _take(res.cast());
       _password = session!.hasPin ? null : password;
+      // Changes queued by someone else, or in another business, aren't this person's to send.
+      outbox = [for (final o in outbox) if (o['userId'] == session!.userId && o['tenantId'] == session!.tenantId) o];
+      await _saveOutbox();
       await _loadBasics();
       await _save();
       _idle = Duration.zero;
       notifyListeners();
+      unawaited(loadNotifications());
+      if (waitingCount > 0) unawaited(syncOutbox());
       return null;
     } on ApiException catch (e) {
       return e.message;
@@ -258,10 +311,17 @@ class AdminState extends ChangeNotifier {
     });
   }
 
-  /// Removes everything kept on the phone about the sign-in.
+  /// Removes everything kept on the phone about the sign-in, and the business's figures saved for offline use.
   Future<void> _forget() async {
     await store.deleteSecret('admin_refresh');
     await store.delete('admin');
+    await store.delete('admin_cache');
+    await store.delete('admin_seen');
+    _cache = {};
+    notifications = [];
+    _seenUpTo = null;
+    offline = false;
+    showingSavedFrom = null;
   }
 
   Future<void> _end(String? why) async {
@@ -279,8 +339,12 @@ class AdminState extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Signs out: the refresh token stops working on the server, and nothing is left on the phone.
+  /// Signs out: the refresh token stops working on the server, and nothing is left on
+  /// the phone, stock changes still waiting to upload included.
   Future<void> signOut() async {
+    outbox = [];
+    outboxNotice = null;
+    await _saveOutbox();
     final token = _refreshToken;
     if (token != null && server.isNotEmpty) {
       try {
@@ -330,6 +394,131 @@ class AdminState extends ChangeNotifier {
     }
   }
 
+  /// Reads from the API, keeping what came back so the screen still has something to
+  /// show when the connection drops. Offline, returns the saved copy and says so
+  /// through [offline] and [showingSavedFrom]; with nothing saved, the error goes on.
+  Future<dynamic> fetch(String path, {Map<String, String>? query}) async {
+    final key = query == null || query.isEmpty ? path : '$path?${(query.entries.toList()..sort((a, b) => a.key.compareTo(b.key))).map((e) => '${e.key}=${e.value}').join('&')}';
+    try {
+      final data = await call((api) => api.get(path, query: query));
+      _cache[key] = {'at': _now().toIso8601String(), 'data': data};
+      // Keep the most recent screens only.
+      if (_cache.length > _cacheLimit) _cache.remove(_cache.keys.first);
+      unawaited(store.writeJson('admin_cache', _cache));
+      if (offline || showingSavedFrom != null) {
+        offline = false;
+        showingSavedFrom = null;
+        notifyListeners();
+        unawaited(syncOutbox());
+      }
+      return data;
+    } on ApiException catch (e) {
+      if (!e.isOffline) rethrow;
+      offline = true;
+      final saved = _cache[key];
+      if (saved is! Map) {
+        notifyListeners();
+        rethrow;
+      }
+      // Seen again: it stays among the kept ones.
+      _cache.remove(key);
+      _cache[key] = saved;
+      showingSavedFrom = DateTime.tryParse(saved['at'] as String);
+      notifyListeners();
+      return saved['data'];
+    }
+  }
+
+  static const _cacheLimit = 60;
+
+  // ----- Changes made offline ---------------------------------------------------------------
+
+  /// An empty queue leaves nothing behind on the phone.
+  Future<void> _saveOutbox() => outbox.isEmpty ? store.delete('admin_outbox') : store.writeJson('admin_outbox', outbox);
+
+  /// Sends a stock change now, or keeps it to send when the connection is back.
+  /// Returns true when it reached Floatly, false when it was queued. Each line
+  /// carries an id, so sending it twice records it once.
+  Future<bool> sendOrQueue(String path, Map<String, dynamic> body, {required String label}) async {
+    try {
+      await call((api) => api.post(path, body));
+      return true;
+    } on ApiException catch (e) {
+      if (!e.isOffline) rethrow;
+      offline = true;
+      outbox = [
+        ...outbox,
+        {'id': '${_now().microsecondsSinceEpoch}', 'path': path, 'body': body, 'label': label, 'at': _now().toIso8601String(), 'userId': session!.userId, 'tenantId': session!.tenantId},
+      ];
+      await _saveOutbox();
+      notifyListeners();
+      return false;
+    }
+  }
+
+  /// Uploads what's waiting, oldest first. One the server turns down is kept aside
+  /// with its reason (the server wins); being offline still just waits.
+  Future<void> syncOutbox() => _syncing ??= _sync().whenComplete(() => _syncing = null);
+
+  Future<void> _sync() async {
+    if (session == null || locked) return;
+    for (final item in [...outbox]) {
+      if (item['error'] != null) continue;
+      try {
+        await call((api) => api.post(item['path'] as String, (item['body'] as Map).cast<String, dynamic>()));
+        outbox = [for (final o in outbox) if (o['id'] != item['id']) o];
+        offline = false;
+      } on ApiException catch (e) {
+        if (e.isOffline) {
+          offline = true;
+          break;
+        }
+        outbox = [for (final o in outbox) o['id'] == item['id'] ? {...o, 'error': e.message} : o];
+        outboxNotice = '"${item['label']}" couldn\'t be saved: ${e.message}';
+      }
+      await _saveOutbox();
+      notifyListeners();
+    }
+  }
+
+  /// Throws away a queued change the server turned down.
+  Future<void> discardQueued(String id) async {
+    outbox = [for (final o in outbox) if (o['id'] != id) o];
+    if (outbox.every((o) => o['error'] == null)) outboxNotice = null;
+    await _saveOutbox();
+    notifyListeners();
+  }
+
+  void dismissOutboxNotice() {
+    outboxNotice = null;
+    notifyListeners();
+  }
+
+  // ----- Notifications ----------------------------------------------------------------------
+
+  /// Fetches the bell's list (kept for offline, like any screen).
+  Future<void> loadNotifications() async {
+    final s = session;
+    if (s == null || locked || !s.can('dashboard.view')) return;
+    try {
+      final res = await fetch('/notifications', query: {'storeId': ?storeId}) as Map;
+      notifications = [for (final n in res['items'] as List) (n as Map).cast<String, dynamic>()];
+      notifyListeners();
+    } on ApiException {
+      // The bell keeps what it had.
+    }
+  }
+
+  /// Everything on the list has been seen: the bell's count goes back to nothing.
+  Future<void> markNotificationsSeen() async {
+    if (notifications.isEmpty) return;
+    final newest = notifications.map((n) => n['at'] as String).reduce((a, b) => a.compareTo(b) > 0 ? a : b);
+    if (_seenUpTo != null && _seenUpTo!.compareTo(newest) >= 0) return;
+    _seenUpTo = newest;
+    await store.write('admin_seen', newest);
+    notifyListeners();
+  }
+
   // ----- Locking --------------------------------------------------------------------------
 
   /// Any touch in the admin area: the idle clock starts again.
@@ -338,10 +527,20 @@ class AdminState extends ChangeNotifier {
   }
 
   /// Called by the app every so often with the time gone by: locks once [idleLimit] has passed untouched.
+  /// Also checks the bell every minute, and uploads queued changes.
   void tick(Duration elapsed) {
     if (session == null || locked) return;
     _idle += elapsed;
-    if (_idle >= idleLimit) lock();
+    if (_idle >= idleLimit) {
+      lock();
+      return;
+    }
+    _sincePoll += elapsed;
+    if (_sincePoll >= const Duration(minutes: 1)) {
+      _sincePoll = Duration.zero;
+      unawaited(loadNotifications());
+    }
+    if (waitingCount > 0) unawaited(syncOutbox());
   }
 
   /// Hides the admin area until the PIN is entered. Without a PIN there is nothing to unlock with, so it signs out.
@@ -367,6 +566,8 @@ class AdminState extends ChangeNotifier {
       notifyListeners();
       // Things may have changed while it was locked.
       unawaited(_loadBasics().then((_) => _save()).then((_) => notifyListeners()).catchError((_) {}));
+      unawaited(loadNotifications());
+      if (waitingCount > 0) unawaited(syncOutbox());
       return null;
     } on ApiException catch (e) {
       if (e.isOffline) return 'Connect to the internet to unlock.';
@@ -403,6 +604,7 @@ class AdminState extends ChangeNotifier {
     if (storeId == id) return;
     storeId = id;
     notifyListeners();
+    unawaited(loadNotifications());
     await _save();
   }
 

@@ -91,11 +91,9 @@ class _ItemListState extends State<ItemList> {
 
   Future<Map<String, dynamic>> _fetch(int page, int pageSize) async {
     final admin = AdminScope.read(context);
-    final res = await admin.call(
-      (api) => api.get(
-        '/inventory/levels',
-        query: {'page': '$page', 'pageSize': '$pageSize', 'storeId': ?admin.storeId, if (_search.isNotEmpty) 'search': _search, if (_lowOnly) 'lowStock': 'true'},
-      ),
+    final res = await admin.fetch(
+      '/inventory/levels',
+      query: {'page': '$page', 'pageSize': '$pageSize', 'storeId': ?admin.storeId, if (_search.isNotEmpty) 'search': _search, if (_lowOnly) 'lowStock': 'true'},
     );
     return (res as Map).cast();
   }
@@ -105,7 +103,7 @@ class _ItemListState extends State<ItemList> {
     if (code == null || !mounted) return;
     final admin = AdminScope.read(context);
     try {
-      final found = await admin.call((api) => api.get('/products/barcode/${Uri.encodeComponent(code)}')) as Map;
+      final found = await admin.fetch('/products/barcode/${Uri.encodeComponent(code)}') as Map;
       if (!mounted) return;
       final variantId = found['variantId'] as String;
       final product = (found['product'] as Map).cast<String, dynamic>();
@@ -275,8 +273,8 @@ class _ItemScreenState extends State<ItemScreen> {
     setState(() => _error = null);
     try {
       final results = await Future.wait([
-        admin.call((api) => api.get('/inventory/items/${widget.variantId}')),
-        admin.call((api) => api.get('/inventory/movements', query: {'variantId': widget.variantId, 'pageSize': '15', 'storeId': ?admin.storeId})),
+        admin.fetch('/inventory/items/${widget.variantId}'),
+        admin.fetch('/inventory/movements', query: {'variantId': widget.variantId, 'pageSize': '15', 'storeId': ?admin.storeId}),
       ]);
       if (!mounted) return;
       setState(() {
@@ -571,18 +569,22 @@ class _StockMoveSheetState extends State<StockMoveSheet> {
     final signed = _damaged || _add ? amount! : -amount!;
     final reason = _reason == 'Other' ? note : (note.isEmpty ? _reason! : '$_reason: $note');
     try {
-      await AdminScope.read(context).call(
-        (api) => api.post('/inventory/movements', {
+      final what = _damaged ? '${formatQty(amount)} written off' : 'Stock ${_add ? 'up' : 'down'} by ${formatQty(amount)}';
+      // Offline, it waits on the phone and uploads when the connection is back.
+      final sent = await AdminScope.read(context).sendOrQueue(
+        '/inventory/movements',
+        {
           'storeId': _storeId,
           'type': _damaged ? 'waste' : 'adjustment',
           'note': reason,
           'lines': [
             {'variantId': widget.item['variantId'], 'quantity': formatFixed(signed, 3), 'clientId': _uuid.v7()},
           ],
-        }),
+        },
+        label: '${itemName(widget.item)}: ${what.toLowerCase()}',
       );
       if (!mounted) return;
-      showMessage(context, _damaged ? '${formatQty(amount)} written off' : 'Stock ${_add ? 'up' : 'down'} by ${formatQty(amount)}');
+      showMessage(context, sent ? what : '$what. No connection: saved on this phone, it uploads when you\'re back online.');
       Navigator.pop(context, true);
     } on ApiException catch (e) {
       if (mounted) {
@@ -820,7 +822,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
     super.initState();
     final admin = AdminScope.read(context);
     _storeId = admin.storeId ?? (admin.stores.where((s) => s.type != 'warehouse').firstOrNull ?? admin.stores.firstOrNull)?.id;
-    admin.call((api) => api.get('/categories', query: {'active': 'true'})).then((list) {
+    admin.fetch('/categories', query: {'active': 'true'}).then((list) {
       if (mounted) setState(() => _categories = (list as List).cast<Map>());
     }, onError: (_) {});
   }

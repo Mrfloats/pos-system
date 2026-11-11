@@ -7,6 +7,7 @@ import 'admin_widgets.dart';
 import 'damaged_screen.dart';
 import 'dashboard_screen.dart';
 import 'inventory_screens.dart';
+import 'notifications_screen.dart';
 import 'people_screens.dart';
 import 'reports_screen.dart';
 import 'returns_screen.dart';
@@ -89,16 +90,79 @@ class _AdminShellState extends State<AdminShell> {
         : KeyedSubtree(key: ValueKey('${current.id}:${session.tenantId}'), child: current.builder(context));
 
     return Scaffold(
-      appBar: AppBar(title: Text(current?.label ?? session.businessName), actions: const [_StorePicker(), SizedBox(width: 4)]),
+      appBar: AppBar(title: Text(current?.label ?? session.businessName), actions: const [_StorePicker(), NotificationBell(), SizedBox(width: 4)]),
       drawer: wide ? null : Drawer(backgroundColor: Brand.ledgerDeep, child: menu),
       body: wide
           ? Row(
               children: [
                 SizedBox(width: 290, child: ColoredBox(color: Brand.ledgerDeep, child: menu)),
-                Expanded(child: body),
+                Expanded(child: _WithBanners(child: body)),
               ],
             )
-          : body,
+          : _WithBanners(child: body),
+    );
+  }
+}
+
+/// Above every section: no connection (and how old the figures are), changes waiting to
+/// upload, and changes Floatly turned down.
+class _WithBanners extends StatelessWidget {
+  const _WithBanners({required this.child});
+
+  final Widget child;
+
+  String _two(int n) => n.toString().padLeft(2, '0');
+
+  @override
+  Widget build(BuildContext context) {
+    final admin = AdminScope.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final saved = admin.showingSavedFrom?.toLocal();
+    final waiting = admin.waitingCount;
+    final refused = admin.outbox.where((o) => o['error'] != null).toList();
+    Widget banner({required IconData icon, required String text, required Color bg, required Color ink, List<Widget> actions = const []}) => Material(
+      color: bg,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+        child: Row(
+          children: [
+            Icon(icon, size: 18, color: ink),
+            const SizedBox(width: 10),
+            Expanded(child: Text(text, style: TextStyle(color: ink, fontSize: 13.5))),
+            ...actions,
+          ],
+        ),
+      ),
+    );
+    return Column(
+      children: [
+        if (admin.offline)
+          banner(
+            icon: Icons.cloud_off_outlined,
+            text: saved == null
+                ? 'No connection to Floatly.'
+                : 'No connection. Showing what was saved ${DateUtils.isSameDay(saved, DateTime.now()) ? 'at' : 'on ${saved.day}/${saved.month},'} ${_two(saved.hour)}:${_two(saved.minute)}.',
+            bg: Brand.amberSoft,
+            ink: Brand.amberInk,
+          ),
+        if (waiting > 0)
+          banner(
+            icon: Icons.cloud_upload_outlined,
+            text: '$waiting stock change${waiting == 1 ? '' : 's'} saved on this phone, waiting to upload.',
+            bg: Brand.amberSoft,
+            ink: Brand.amberInk,
+            actions: [TextButton(onPressed: admin.syncOutbox, child: const Text('Try now'))],
+          ),
+        for (final r in refused)
+          banner(
+            icon: Icons.error_outline,
+            text: '"${r['label']}" wasn\'t saved: ${r['error']}',
+            bg: scheme.errorContainer,
+            ink: scheme.onErrorContainer,
+            actions: [TextButton(onPressed: () => admin.discardQueued(r['id'] as String), child: const Text('OK'))],
+          ),
+        Expanded(child: child),
+      ],
     );
   }
 }
@@ -276,7 +340,16 @@ class _Menu extends StatelessWidget {
               label: 'Logout',
               color: const Color(0xFFFF8A80),
               onTap: () async {
-                final ok = await confirm(context, title: 'Log out?', message: "You'll need your email and password to sign in again.", yes: 'Log out', danger: true);
+                final waiting = admin.waitingCount;
+                final ok = await confirm(
+                  context,
+                  title: 'Log out?',
+                  message: waiting > 0
+                      ? '$waiting stock change${waiting == 1 ? " hasn't" : "s haven't"} uploaded yet and will be lost. Connect to the internet first to keep ${waiting == 1 ? 'it' : 'them'}.'
+                      : "You'll need your email and password to sign in again.",
+                  yes: 'Log out',
+                  danger: true,
+                );
                 if (ok) await admin.signOut();
               },
             ),

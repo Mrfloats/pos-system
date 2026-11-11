@@ -39,8 +39,9 @@ class _DamagedStockScreenState extends State<DamagedStockScreen> {
 
   Future<Map<String, dynamic>> _fetch(int page, int pageSize) async {
     final admin = AdminScope.read(context);
-    final res = await admin.call(
-      (api) => api.get('/inventory/movements', query: {'type': 'waste', 'page': '$page', 'pageSize': '$pageSize', 'storeId': ?admin.storeId, if (_search.isNotEmpty) 'search': _search}),
+    final res = await admin.fetch(
+      '/inventory/movements',
+      query: {'type': 'waste', 'page': '$page', 'pageSize': '$pageSize', 'storeId': ?admin.storeId, if (_search.isNotEmpty) 'search': _search},
     );
     return (res as Map).cast();
   }
@@ -159,7 +160,7 @@ class _PickDamagedItem extends StatelessWidget {
     body: ItemList(
       onPick: (context, item, reload) async {
         final admin = AdminScope.read(context);
-        final full = (await admin.call((api) => api.get('/inventory/items/${item['variantId']}')) as Map).cast<String, dynamic>();
+        final full = (await admin.fetch('/inventory/items/${item['variantId']}') as Map).cast<String, dynamic>();
         if (!context.mounted) return;
         final done = await showModalBottomSheet<bool>(
           context: context,

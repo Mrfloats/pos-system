@@ -94,7 +94,7 @@ class _ReportsScreenState extends State<ReportsScreen> {
       _error = null;
     });
     try {
-      Future<Map<String, dynamic>> get(String path, Map<String, String> q) async => ((await admin.call((api) => api.get(path, query: q))) as Map).cast();
+      Future<Map<String, dynamic>> get(String path, Map<String, String> q) async => ((await admin.fetch(path, query: q)) as Map).cast();
       final ReportResult result = switch (_kind) {
         ReportKind.daily => dailyReport(await get('/sales/reports/daily', range), money),
         ReportKind.products => profitReport(await get('/sales/reports/profitability', {...range, 'by': 'item'}), 'item', money),

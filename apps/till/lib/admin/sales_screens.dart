@@ -123,7 +123,7 @@ class _SalesListState extends State<_SalesList> {
 
   Future<void> _loadCashiers(AdminState admin) async {
     try {
-      final staff = await admin.call((api) => api.get('/staff')) as List;
+      final staff = await admin.fetch('/staff') as List;
       if (!mounted) return;
       setState(() {
         _cashiers = [
@@ -138,22 +138,20 @@ class _SalesListState extends State<_SalesList> {
 
   Future<Map<String, dynamic>> _fetch(int page, int pageSize) async {
     final admin = AdminScope.read(context);
-    final res = await admin.call(
-      (api) => api.get(
-        '/sales',
-        query: {
-          'page': '$page',
-          'pageSize': '$pageSize',
-          'excludeQuotations': 'true',
-          'storeId': ?admin.storeId,
-          if (_period.from != null) 'from': isoDay(_period.from!),
-          if (_period.to != null) 'to': isoDay(_period.to!),
-          if (_search.isNotEmpty) 'search': _search,
-          'cashierId': ?_cashierId,
-          'paymentMethod': ?_method,
-          if (_kind == 'void') 'status': 'void' else if (_kind != null) ...{'type': _kind!, 'status': 'completed'},
-        },
-      ),
+    final res = await admin.fetch(
+      '/sales',
+      query: {
+        'page': '$page',
+        'pageSize': '$pageSize',
+        'excludeQuotations': 'true',
+        'storeId': ?admin.storeId,
+        if (_period.from != null) 'from': isoDay(_period.from!),
+        if (_period.to != null) 'to': isoDay(_period.to!),
+        if (_search.isNotEmpty) 'search': _search,
+        'cashierId': ?_cashierId,
+        'paymentMethod': ?_method,
+        if (_kind == 'void') 'status': 'void' else if (_kind != null) ...{'type': _kind!, 'status': 'completed'},
+      },
     );
     return (res as Map).cast();
   }
@@ -410,7 +408,7 @@ class _SaleLoaderState extends State<_SaleLoader> {
   Future<void> _load() async {
     setState(() => _error = null);
     try {
-      final res = await AdminScope.read(context).call((api) => api.get('/sales/${widget.saleId}')) as Map;
+      final res = await AdminScope.read(context).fetch('/sales/${widget.saleId}') as Map;
       if (mounted) setState(() => _sale = res.cast());
     } catch (e) {
       if (mounted) setState(() => _error = e);
