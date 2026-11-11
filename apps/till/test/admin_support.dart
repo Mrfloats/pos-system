@@ -42,6 +42,8 @@ class FakeServer {
     'suppliers.view',
     'suppliers.edit',
     'returns.approve',
+    'reports.view',
+    'reports.stock',
   ];
 
   /// Stocked items: variant id → details, with quantity in thousandths per store.
@@ -191,6 +193,75 @@ class FakeServer {
           ],
         },
       });
+    }
+    return null;
+  }
+
+  /// Every report asked for: path and query.
+  final reportQueries = <(String, Map<String, String>)>[];
+
+  /// The books (profit and loss) refuse this person.
+  bool booksRefused = false;
+
+  http.Response? _reports(http.Request req, String path) {
+    final q = req.url.queryParameters;
+    if (!path.contains('/reports/')) return null;
+    reportQueries.add((path, q));
+    switch (path) {
+      case '/sales/reports/daily':
+        return _json({
+          'from': q['from'],
+          'to': q['to'],
+          'rows': [
+            {'day': '2026-11-08', 'sales': 10, 'returns': 0, 'gross': '115.00', 'net': '100.00', 'tax': '15.00', 'profit': '30.00', 'cash': '80.00', 'card': '35.00', 'mobile': '0.00', 'bank': '0.00'},
+            {'day': '2026-11-09', 'sales': 4, 'returns': 1, 'gross': '23.00', 'net': '20.00', 'tax': '3.00', 'profit': '-2.00', 'cash': '23.00', 'card': '0.00', 'mobile': '0.00', 'bank': '0.00'},
+            {'day': '2026-11-10', 'sales': 6, 'returns': 0, 'gross': '69.00', 'net': '60.00', 'tax': '9.00', 'profit': '18.00', 'cash': '9.00', 'card': '0.00', 'mobile': '60.00', 'bank': '0.00'},
+          ],
+          'totals': {'gross': '207.00', 'net': '180.00', 'tax': '27.00', 'profit': '46.00', 'cash': '112.00', 'card': '35.00', 'mobile': '60.00', 'bank': '0.00', 'sales': 20, 'returns': 1},
+        });
+      case '/sales/reports/profitability':
+        final by = q['by'];
+        final rows = switch (by) {
+          'item' => [
+            {'id': 'v-rice', 'name': 'Rice · 5kg', 'quantity': '12.000', 'sales': 9, 'revenue': '100.00', 'tax': '15.00', 'cost': '70.00', 'profit': '30.00', 'margin': '30.0'},
+            {'id': 'v-oil', 'name': 'Cooking oil, 2L', 'quantity': '20.000', 'sales': 11, 'revenue': '80.00', 'tax': '12.00', 'cost': '64.00', 'profit': '16.00', 'margin': '20.0'},
+          ],
+          'category' => [
+            {'id': 'c1', 'name': 'Groceries', 'quantity': '32.000', 'sales': 20, 'revenue': '180.00', 'tax': '27.00', 'cost': '134.00', 'profit': '46.00', 'margin': '25.6'},
+          ],
+          'cashier' => [
+            {'id': 'u2', 'name': 'Chipo Cashier', 'quantity': '32.000', 'sales': 20, 'revenue': '180.00', 'tax': '27.00', 'cost': '134.00', 'profit': '46.00', 'margin': '25.6'},
+          ],
+          _ => [
+            {'id': 's1', 'name': 'Main Store', 'quantity': '32.000', 'sales': 20, 'revenue': '180.00', 'tax': '27.00', 'cost': '134.00', 'profit': '46.00', 'margin': '25.6'},
+          ],
+        };
+        return _json({'by': by, 'rows': rows, 'totals': {'revenue': '180.00', 'cost': '134.00', 'tax': '27.00', 'profit': '46.00', 'margin': '25.6'}});
+      case '/accounting/reports/profit-and-loss':
+        if (booksRefused) return _json({'statusCode': 403, 'message': 'Your role cannot do this'}, 403);
+        return _json({
+          'from': q['from'],
+          'to': q['to'],
+          'currency': 'USD',
+          'sections': [
+            {'title': 'Income', 'rows': [], 'total': '180.00'},
+            {'title': 'Cost of sales', 'rows': [], 'total': '134.00'},
+            {'title': 'Expenses', 'rows': [], 'total': '60.00'},
+          ],
+          'grossProfit': '46.00',
+          'netProfit': '-14.00',
+        });
+      case '/inventory/reports/valuation':
+        return _json({
+          'asOf': null,
+          'rows': [
+            {'variantId': 'v-rice', 'productName': 'Rice', 'variantName': '5kg', 'sku': 'RICE5', 'category': 'Groceries', 'unitCost': '7.00', 'quantity': '24.000', 'value': '168.00'},
+            {'variantId': 'v-oil', 'productName': 'Cooking oil 2L', 'variantName': 'Default', 'sku': null, 'category': 'Groceries', 'unitCost': '3.00', 'quantity': '30.000', 'value': '90.00'},
+            {'variantId': 'v-cola', 'productName': 'Cola', 'variantName': '500ml', 'sku': null, 'category': 'Drinks', 'unitCost': '0.50', 'quantity': '-2.000', 'value': '-1.00'},
+          ],
+          'totalValue': '257.00',
+          'items': 3,
+        });
     }
     return null;
   }
@@ -481,6 +552,8 @@ class FakeServer {
     if (people != null) return people;
     final asked = _requests(req, path, body);
     if (asked != null) return asked;
+    final report = _reports(req, path);
+    if (report != null) return report;
     if (path.startsWith('/sales/')) {
       final sale = sales.where((s) => s['id'] == path.substring(7)).firstOrNull;
       if (sale == null) return _json({'statusCode': 404, 'message': 'Sale not found'}, 404);
@@ -619,7 +692,11 @@ Future<void> tapAndSettle(WidgetTester tester, Finder finder) async {
 
 /// Opens the menu and chooses a section.
 Future<void> goTo(WidgetTester tester, String section) async {
-  await tester.runAsync(() => tester.tap(find.byTooltip('Open navigation menu')));
-  await tester.pumpAndSettle();
-  await tapAndSettle(tester, find.text(section));
+  // On a wide screen the menu is always open at the side.
+  final menu = find.byTooltip('Open navigation menu');
+  if (menu.evaluate().isNotEmpty) {
+    await tester.runAsync(() => tester.tap(menu));
+    await tester.pumpAndSettle();
+  }
+  await tapAndSettle(tester, find.text(section).last);
 }

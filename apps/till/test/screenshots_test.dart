@@ -193,4 +193,21 @@ void main() {
     await tapAndSettle(tester, find.text('Refund of S-00103'));
     await shot('request');
   }, skip: !on);
+
+  testWidgets('reports', (tester) async {
+    await open(tester, const Size(412, 1500));
+    await goTo(tester, 'Reports');
+    await shot('report-daily');
+    await tapAndSettle(tester, find.widgetWithText(ChoiceChip, 'Products'));
+    await shot('report-products');
+    await tester.ensureVisible(find.widgetWithText(ChoiceChip, 'Profit'));
+    await tapAndSettle(tester, find.widgetWithText(ChoiceChip, 'Profit'));
+    await shot('report-profit');
+  }, skip: !on);
+
+  testWidgets('reports wide', (tester) async {
+    await open(tester, const Size(1280, 1100));
+    await goTo(tester, 'Reports');
+    await shot('report-wide');
+  }, skip: !on);
 }

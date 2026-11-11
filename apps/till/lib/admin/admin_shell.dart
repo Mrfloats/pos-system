@@ -8,6 +8,7 @@ import 'damaged_screen.dart';
 import 'dashboard_screen.dart';
 import 'inventory_screens.dart';
 import 'people_screens.dart';
+import 'reports_screen.dart';
 import 'returns_screen.dart';
 import 'sales_screens.dart';
 
@@ -31,6 +32,7 @@ final adminSections = <AdminSection>[
   AdminSection(id: 'suppliers', label: 'Suppliers', icon: Icons.local_shipping_outlined, permission: 'suppliers.view', builder: (_) => const SuppliersScreen()),
   AdminSection(id: 'damaged', label: 'Damaged Stock', icon: Icons.heart_broken_outlined, permission: 'damaged.record', builder: (_) => const DamagedStockScreen()),
   AdminSection(id: 'returns', label: 'Returns', icon: Icons.assignment_return_outlined, permission: 'returns.approve', builder: (_) => const ReturnsScreen()),
+  AdminSection(id: 'reports', label: 'Reports', icon: Icons.bar_chart, permission: 'reports.view', builder: (_) => const ReportsScreen()),
   AdminSection(id: 'receipts', label: 'Receipts', icon: Icons.receipt_long_outlined, permission: 'sales.view', builder: (_) => const ReceiptsScreen()),
 ];
 

@@ -9,6 +9,8 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:floatly_till/admin/admin_state.dart';
+import 'package:floatly_till/admin/report_export.dart';
+import 'package:floatly_till/admin/report_data.dart';
 import 'package:floatly_till/core/api.dart';
 import 'package:floatly_till/core/local_store.dart';
 import 'package:floatly_till/core/money.dart';
@@ -314,6 +316,47 @@ void main() {
       final supplier = await admin.call((api) => api.post('/suppliers', {'name': 'Live Supplier $tag', 'paymentTermsDays': 7})) as Map;
       final sup = await admin.call((api) => api.get('/suppliers/${supplier['id']}/summary')) as Map;
       expect([sup['owed'], sup['paymentTermsDays'], sup['billCount']], ['0.00', 7, 0]);
+      await admin.signOut();
+      admin.dispose();
+    },
+    skip: server == null ? 'Set FLOATLY_LIVE_API to run against a real API' : false,
+    timeout: const Timeout(Duration(minutes: 2)),
+  );
+
+  test(
+    'a manager runs every report on the real figures, and exports them',
+    () async {
+      final admin = AdminState(MemoryStore());
+      await admin.init();
+      expect(await admin.signIn(server: server!, email: 'manager@pos.local', password: 'demo1234'), isNull);
+      String money(int c) => formatMoney(c, admin.symbol);
+      final today = DateTime.now();
+      final from = today.subtract(const Duration(days: 29)).toIso8601String().substring(0, 10);
+      final to = today.toIso8601String().substring(0, 10);
+      Future<Map<String, dynamic>> get(String path, [Map<String, String> q = const {}]) async => ((await admin.call((api) => api.get(path, query: q))) as Map).cast();
+      final range = {'from': from, 'to': to};
+
+      final daily = dailyReport(await get('/sales/reports/daily', range), money);
+      expect(daily.chart!.bars, hasLength(30), reason: 'a bar for every day, quiet ones too');
+      expect(int.parse(daily.stats[1].value!), greaterThan(0), reason: 'the demo data has sales this month');
+      for (final by in ['item', 'category', 'cashier']) {
+        final r = profitReport(await get('/sales/reports/profitability', {...range, 'by': by}), by, money);
+        expect(r.table.rows, isNotEmpty, reason: by);
+      }
+      final summary = profitSummary(
+        await get('/sales/reports/profitability', {...range, 'by': 'store'}),
+        await get('/sales/reports/daily', range),
+        await get('/accounting/reports/profit-and-loss', range),
+        oneStore: false,
+        money: money,
+      );
+      expect(summary.stats.map((s) => s.label), contains('Net profit'));
+      final stock = stockValueReport(await get('/inventory/reports/valuation'), money);
+      expect(stock.table.rows, isNotEmpty);
+
+      expect(reportCsv(daily.table).split('\r\n').first, startsWith('Day,Sales,Refunds'));
+      final pdf = await reportPdf(report: stock, business: admin.session!.businessName, period: 'Now', place: 'All stores', symbol: admin.symbol, generated: 'live test');
+      expect(String.fromCharCodes(pdf.take(5)), '%PDF-');
       await admin.signOut();
       admin.dispose();
     },
