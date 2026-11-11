@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 
+import '../core/api.dart';
 import '../core/money.dart';
 import '../models/receipt.dart';
 import '../printing/print_receipt.dart';
@@ -55,6 +56,18 @@ class _ReceiptScreenState extends State<ReceiptScreen> {
 
   void _done() => Navigator.of(context).popUntil((r) => r.isFirst);
 
+  /// A cashier can't void a sale: they say why, and a manager decides.
+  Future<void> _askToVoid() async {
+    final reason = await showDialog<String>(context: context, builder: (_) => const _VoidReasonDialog());
+    if (reason == null || !mounted) return;
+    try {
+      await TillScope.read(context).askManager(widget.receipt.saleId!, {'kind': 'void', 'reason': reason});
+      if (mounted) showMessage(context, 'Asked a manager to void ${widget.receipt.number}');
+    } on ApiException catch (e) {
+      if (mounted) showMessage(context, e.message, error: true);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final state = TillScope.of(context);
@@ -62,6 +75,7 @@ class _ReceiptScreenState extends State<ReceiptScreen> {
     final pending = state.pendingFor(r);
     final scheme = Theme.of(context).colorScheme;
     final canManage = state.session?.canManage ?? false;
+    final request = r.saleId == null ? null : state.requestFor(r.saleId!);
 
     final (IconData icon, String status, Color color) = r.discarded
         ? (Icons.block, 'Discarded: not recorded in Floatly', scheme.error)
@@ -150,24 +164,37 @@ class _ReceiptScreenState extends State<ReceiptScreen> {
                     Expanded(
                       child: OutlinedButton.icon(onPressed: _print, icon: const Icon(Icons.print_outlined), label: const Text('Print')),
                     ),
-                    if (canManage && r.uploaded && !widget.justSold) ...[
+                    if (r.uploaded && !widget.justSold && !r.isReturn && (canManage || request?['status'] != 'pending')) ...[
                       const SizedBox(width: 10),
                       Expanded(
                         child: OutlinedButton.icon(
                           onPressed: state.online
                               ? () => Navigator.of(context).push(
                                   MaterialPageRoute(
-                                    builder: (_) => RefundScreen(saleId: r.saleId!, number: r.number!),
+                                    builder: (_) => RefundScreen(saleId: r.saleId!, number: r.number!, ask: !canManage),
                                   ),
                                 )
                               : () => showMessage(context, 'Refunds need the internet', error: true),
                           icon: const Icon(Icons.undo),
-                          label: const Text('Refund'),
+                          label: Text(canManage ? 'Refund' : 'Ask for a refund'),
                         ),
                       ),
                     ],
                   ],
                 ),
+                if (!canManage && r.uploaded && !widget.justSold) ...[
+                  if (request != null) _RequestStatus(request: request),
+                  if (request?['status'] != 'pending')
+                    Align(
+                      alignment: Alignment.centerLeft,
+                      child: TextButton.icon(
+                        style: TextButton.styleFrom(foregroundColor: scheme.error),
+                        onPressed: state.online ? _askToVoid : () => showMessage(context, 'Asking a manager needs the internet', error: true),
+                        icon: const Icon(Icons.block),
+                        label: const Text('Ask a manager to void this sale'),
+                      ),
+                    ),
+                ],
                 if (widget.justSold) ...[
                   const SizedBox(height: 10),
                   FilledButton.icon(onPressed: _done, icon: const Icon(Icons.add_shopping_cart), label: const Text('New sale')),
@@ -179,6 +206,98 @@ class _ReceiptScreenState extends State<ReceiptScreen> {
       ),
     );
   }
+}
+
+/// Where a cashier's request for this sale stands.
+class _RequestStatus extends StatelessWidget {
+  const _RequestStatus({required this.request});
+
+  final Map<String, dynamic> request;
+
+  @override
+  Widget build(BuildContext context) {
+    final state = TillScope.of(context);
+    final scheme = Theme.of(context).colorScheme;
+    final what = request['kind'] == 'refund' ? 'refund' : 'void';
+    final (IconData icon, Color bg, Color ink, String text) = switch (request['status']) {
+      'pending' => (Icons.hourglass_top, Brand.amberSoft, Brand.amberInk, 'You asked for a $what. Waiting for a manager: don\'t give money back yet.'),
+      'approved' || 'rejected' => (
+        request['status'] == 'approved' ? Icons.check_circle_outline : Icons.cancel_outlined,
+        request['status'] == 'approved' ? Brand.ledgerSoft : scheme.errorContainer,
+        request['status'] == 'approved' ? Brand.ledgerDeep : scheme.onErrorContainer,
+        state.describeDecision(request),
+      ),
+      _ => (Icons.undo, scheme.surfaceContainerHighest, scheme.onSurface, 'You took back your request for a $what.'),
+    };
+    return Padding(
+      padding: const EdgeInsets.only(top: 12),
+      child: Material(
+        color: bg,
+        borderRadius: BorderRadius.circular(12),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(12, 10, 8, 10),
+          child: Row(
+            children: [
+              Icon(icon, color: ink, size: 20),
+              const SizedBox(width: 10),
+              Expanded(child: Text(text, style: TextStyle(color: ink))),
+              if (request['status'] == 'pending')
+                TextButton(
+                  onPressed: () async {
+                    try {
+                      await state.cancelRequest(request['id'] as String);
+                    } on ApiException catch (e) {
+                      if (context.mounted) showMessage(context, e.message, error: true);
+                    }
+                  },
+                  child: const Text('Take back'),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _VoidReasonDialog extends StatefulWidget {
+  const _VoidReasonDialog();
+
+  @override
+  State<_VoidReasonDialog> createState() => _VoidReasonDialogState();
+}
+
+class _VoidReasonDialogState extends State<_VoidReasonDialog> {
+  final _reason = TextEditingController();
+
+  @override
+  void dispose() {
+    _reason.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('Ask to void this sale'),
+    content: Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        const Text('A manager voids it, or says no. Voiding puts the stock back and takes the money out of the books.'),
+        const SizedBox(height: 12),
+        TextField(
+          controller: _reason,
+          autofocus: true,
+          maxLength: 300,
+          decoration: const InputDecoration(labelText: 'Why', counterText: ''),
+          onChanged: (_) => setState(() {}),
+        ),
+      ],
+    ),
+    actions: [
+      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+      FilledButton(onPressed: _reason.text.trim().isEmpty ? null : () => Navigator.pop(context, _reason.text.trim()), child: const Text('Ask a manager')),
+    ],
+  );
 }
 
 /// The receipt drawn like a till roll.

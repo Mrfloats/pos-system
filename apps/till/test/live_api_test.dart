@@ -95,6 +95,36 @@ void main() {
 
       // A cashier can't refund; the manager can.
       await expectLater(state.refund(receipt.saleId!, {}), throwsA(isA<ApiException>().having((e) => e.status, 'status', 403)));
+
+      // …but can ask: a manager approves on the phone, and the till says what to give back.
+      final askedLine = (sale['lines'] as List).cast<Map>().last;
+      final asked = await state.askManager(receipt.saleId!, {
+        'kind': 'refund',
+        'lines': [
+          {'lineId': askedLine['id'], 'quantity': '1'},
+        ],
+        'method': 'cash',
+        'reason': 'Live test request',
+      });
+      expect(asked['status'], 'pending');
+      expect(asked['shiftId'], state.shift!.id);
+      final phone = AdminState(MemoryStore());
+      await phone.init();
+      expect(await phone.signIn(server: server, email: 'manager@pos.local', password: 'demo1234'), isNull);
+      final waiting = await phone.call((api) => api.get('/sale-requests', query: {'status': 'pending'})) as Map;
+      expect((waiting['items'] as List).map((r) => (r as Map)['id']), contains(asked['id']));
+      await expectLater(
+        phone.call((api) => api.post('/sale-requests/${asked['id']}/approve', {})),
+        throwsA(isA<ApiException>().having((e) => e.code, 'code', 'pin_required')),
+      );
+      final approved = await phone.call((api) => api.post('/sale-requests/${asked['id']}/approve', {}), pin: '5678') as Map;
+      expect(approved['resultNumber'], startsWith('R-'));
+      final made = await owner.get('/sales/${approved['resultSaleId']}') as Map;
+      expect([made['shiftId'], made['salesperson']], [state.shift!.id, state.session!.fullName]);
+      await state.loadMyRequests();
+      expect(state.requestNotice, contains('give back'));
+      await phone.signOut();
+      phone.dispose();
       state.lock();
       expect(await state.signIn('5678'), isNull);
       final line = (sale['lines'] as List).cast<Map>().first;

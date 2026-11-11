@@ -89,8 +89,14 @@ export class DashboardService {
         ORDER BY on_hand - reorder_level, name
         LIMIT 5`);
 
+      const [{ waiting }] = (
+        await tx.execute(sql`SELECT count(*)::int AS waiting FROM sale_requests WHERE status = 'pending' ${q.storeId ? sql`AND store_id = ${q.storeId}` : sql``}`)
+      ).rows as { waiting: number }[];
+
       return {
         date: now.day,
+        /** Refund and void requests waiting for someone to decide. */
+        pendingRequests: waiting,
         currencyCode: t?.currency ?? 'USD',
         storeId: q.storeId ?? null,
         today: {

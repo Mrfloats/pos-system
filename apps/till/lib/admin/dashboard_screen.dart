@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/money.dart';
 import '../theme.dart';
 import 'admin_widgets.dart';
+import 'returns_screen.dart';
 
 const _methodLabels = {'cash': 'Cash', 'card': 'Card', 'mobile': 'Mobile money', 'bank': 'Bank transfer'};
 
@@ -125,10 +126,41 @@ class _Summary extends StatelessWidget {
     final lowItems = (low['items'] as List).cast<Map>();
     final lowTotal = low['total'] as int;
     final returns = today['returns'] as int;
+    final waiting = (data['pendingRequests'] as int?) ?? 0;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
+        if (waiting > 0 && admin.session!.can('returns.approve')) ...[
+          Material(
+            color: Brand.amberSoft,
+            borderRadius: BorderRadius.circular(12),
+            child: InkWell(
+              borderRadius: BorderRadius.circular(12),
+              onTap: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => Scaffold(appBar: AppBar(title: const Text('Returns')), body: const ReturnsScreen())),
+              ),
+              child: Padding(
+                padding: const EdgeInsets.all(14),
+                child: Row(
+                  children: [
+                    const Icon(Icons.assignment_return_outlined, color: Brand.amberInk),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        '$waiting refund or void request${waiting == 1 ? '' : 's'} waiting for you',
+                        style: const TextStyle(color: Brand.amberInk, fontWeight: FontWeight.w600),
+                      ),
+                    ),
+                    const Icon(Icons.chevron_right, color: Brand.amberInk),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+        ],
         if (stale != null) ...[
           Material(
             color: Brand.amberSoft,

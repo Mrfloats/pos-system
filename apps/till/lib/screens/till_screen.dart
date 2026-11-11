@@ -203,6 +203,8 @@ class _TillScreenState extends State<TillScreen> {
       body: Column(
         children: [
           if (state.notice != null) _Banner(text: state.notice!, color: Brand.amberSoft, ink: Brand.amberInk),
+          if (state.requestNotice != null)
+            _Banner(text: state.requestNotice!, color: Brand.ledgerSoft, ink: Brand.ledgerDeep, action: 'OK', onAction: state.dismissRequestNotice),
           if (state.online && session.token == null && waiting > 0)
             _Banner(text: "Sales can't upload until you sign in again.", color: Brand.amberSoft, ink: Brand.amberInk, action: 'Sign in', onAction: _lock),
           Expanded(

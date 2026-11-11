@@ -41,6 +41,7 @@ class FakeServer {
     'customers.edit',
     'suppliers.view',
     'suppliers.edit',
+    'returns.approve',
   ];
 
   /// Stocked items: variant id → details, with quantity in thousandths per store.
@@ -192,6 +193,73 @@ class FakeServer {
       });
     }
     return null;
+  }
+
+  /// Refund and void requests, oldest first.
+  final saleRequests = <Map<String, dynamic>>[
+    {
+      'id': 'rq-1',
+      'saleId': 'sale-103',
+      'saleNumber': 'S-00103',
+      'kind': 'refund',
+      'status': 'pending',
+      'amount': '10.00',
+      'currencyCode': 'USD',
+      'reason': 'Rice bag torn',
+      'method': 'cash',
+      'restock': false,
+      'lines': [
+        {'lineId': 'l1', 'quantity': '1.000', 'name': 'Rice 5kg'},
+      ],
+      'storeName': 'Main Store',
+      'customerName': 'Cash Customer',
+      'requestedBy': 'u2',
+      'requestedByName': 'Chipo Cashier',
+      'createdAt': '2026-11-10T11:00:00.000Z',
+    },
+    {
+      'id': 'rq-2',
+      'saleId': 'sale-101',
+      'saleNumber': 'S-00101',
+      'kind': 'void',
+      'status': 'pending',
+      'amount': '12.50',
+      'currencyCode': 'USD',
+      'reason': 'Rang it up twice',
+      'lines': null,
+      'storeName': 'Main Store',
+      'customerName': 'Cash Customer',
+      'requestedBy': 'u1',
+      'requestedByName': 'Admin User',
+      'createdAt': '2026-11-10T11:30:00.000Z',
+    },
+  ];
+
+  /// What was sent to decide requests: (id, decision, body, PIN header).
+  final decisions = <(String, String, Map<String, dynamic>, String?)>[];
+
+  http.Response? _requests(http.Request req, String path, Map<String, dynamic> body) {
+    if (path == '/sale-requests') {
+      final status = req.url.queryParameters['status'];
+      final list = [
+        for (final r in saleRequests)
+          if (status == null || r['status'] == status || (status == 'decided' && (r['status'] == 'approved' || r['status'] == 'rejected'))) r,
+      ];
+      return _json({'items': list, 'total': list.length, 'page': 1, 'pageSize': 30});
+    }
+    final m = RegExp(r'^/sale-requests/([^/]+)/(approve|reject)$').firstMatch(path);
+    if (m == null) return null;
+    final r = saleRequests.firstWhere((x) => x['id'] == m.group(1));
+    final givenPin = req.headers['X-Floatly-Pin'];
+    decisions.add((m.group(1)!, m.group(2)!, body, givenPin));
+    if (m.group(2) == 'approve') {
+      if (givenPin == null) return _json({'statusCode': 403, 'code': 'pin_required', 'message': 'Enter your PIN to confirm this'}, 403);
+      if (givenPin != pin) return _json({'statusCode': 403, 'code': 'wrong_pin', 'message': 'Wrong PIN'}, 403);
+      r.addAll({'status': 'approved', 'decidedByName': 'Admin User', 'decidedAt': '2026-11-10T12:00:00.000Z', 'resultNumber': 'R-00200', 'resultSaleId': 'sale-200'});
+    } else {
+      r.addAll({'status': 'rejected', 'decidedByName': 'Admin User', 'decidedAt': '2026-11-10T12:00:00.000Z', 'decisionNote': body['note']});
+    }
+    return _json(r);
   }
 
   /// Customers and suppliers by id, and every body sent to add or change one.
@@ -378,6 +446,7 @@ class FakeServer {
           'date': '2026-11-10',
           'currencyCode': 'USD',
           'storeId': req.url.queryParameters['storeId'],
+          'pendingRequests': depot ? 0 : saleRequests.where((r) => r['status'] == 'pending').length,
           'today': {'gross': depot ? '0.00' : '1234.50', 'sales': depot ? 0 : 41, 'returns': depot ? 0 : 2, 'averageBasket': depot ? '0.00' : '31.20'},
           'yesterday': {'gross': '1000.00', 'sales': 30, 'changePercent': depot ? null : 23.5},
           'lastWeek': {'day': '2026-11-03', 'gross': '1500.00', 'sales': 50, 'changePercent': depot ? null : -17.7},
@@ -410,6 +479,8 @@ class FakeServer {
     if (stock != null) return stock;
     final people = _people(req, path, body);
     if (people != null) return people;
+    final asked = _requests(req, path, body);
+    if (asked != null) return asked;
     if (path.startsWith('/sales/')) {
       final sale = sales.where((s) => s['id'] == path.substring(7)).firstOrNull;
       if (sale == null) return _json({'statusCode': 404, 'message': 'Sale not found'}, 404);

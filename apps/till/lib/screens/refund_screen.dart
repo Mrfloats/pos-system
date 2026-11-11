@@ -6,13 +6,16 @@ import '../models/sale.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
-/// Give money back for some or all of a sale (managers, online). Goods go back
-/// on the shelf unless they are damaged.
+/// Give money back for some or all of a sale (managers, online), or ask a
+/// manager to (cashiers). Goods go back on the shelf unless they are damaged.
 class RefundScreen extends StatefulWidget {
-  const RefundScreen({super.key, required this.saleId, required this.number});
+  const RefundScreen({super.key, required this.saleId, required this.number, this.ask = false});
 
   final String saleId;
   final String number;
+
+  /// Ask a manager rather than refunding: the cashier may not refund themselves.
+  final bool ask;
 
   @override
   State<RefundScreen> createState() => _RefundScreenState();
@@ -73,6 +76,27 @@ class _RefundScreenState extends State<RefundScreen> {
     ];
     if (lines.isEmpty || _reason.text.trim().isEmpty) return;
     setState(() => _busy = true);
+    if (widget.ask) {
+      try {
+        await TillScope.read(context).askManager(widget.saleId, {'kind': 'refund', 'lines': lines, 'method': _method.name, 'reason': _reason.text.trim(), 'restock': _restock});
+        if (!mounted) return;
+        await showDialog<void>(
+          context: context,
+          builder: (context) => AlertDialog(
+            icon: const Icon(Icons.hourglass_top, color: Brand.ledger, size: 40),
+            title: const Text('Asked a manager'),
+            content: const Text("Don't give any money back yet. The till tells you when a manager answers.", style: TextStyle(fontSize: 16)),
+            actions: [FilledButton(onPressed: () => Navigator.pop(context), child: const Text('OK'))],
+          ),
+        );
+        if (mounted) Navigator.of(context).pop();
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        setState(() => _busy = false);
+        showMessage(context, e.message, error: true);
+      }
+      return;
+    }
     try {
       final ret = await TillScope.read(context)
           .refund(widget.saleId, {'lines': lines, 'method': _method.name, 'reason': _reason.text.trim(), 'restock': _restock});
@@ -100,7 +124,7 @@ class _RefundScreenState extends State<RefundScreen> {
     final scheme = Theme.of(context).colorScheme;
     final sale = _sale;
     return Scaffold(
-      appBar: AppBar(title: Text('Refund ${widget.number}')),
+      appBar: AppBar(title: Text(widget.ask ? 'Ask for a refund: ${widget.number}' : 'Refund ${widget.number}')),
       body: sale == null
           ? Center(
               child: _error == null ? const CircularProgressIndicator() : Padding(padding: const EdgeInsets.all(24), child: Text(_error!)),
@@ -195,7 +219,7 @@ class _RefundScreenState extends State<RefundScreen> {
                       onPressed: !_busy && _refundTotal > 0 && _reason.text.trim().isNotEmpty ? _submit : null,
                       child: Text(
                         _refundTotal > 0
-                            ? 'Refund ${formatMoney(_refundTotal, TillScope.of(context).catalog?.currency(sale['currencyCode'] as String).label ?? '')}'
+                            ? '${widget.ask ? 'Ask a manager to refund' : 'Refund'} ${formatMoney(_refundTotal, TillScope.of(context).catalog?.currency(sale['currencyCode'] as String).label ?? '')}'
                             : 'Choose what is coming back',
                       ),
                     ),

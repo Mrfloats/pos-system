@@ -134,6 +134,13 @@
       "when": 1794303376725,
       "tag": "0018_mobile_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1794320190069,
+      "tag": "0019_sale_requests",
+      "breakpoints": true
     }
   ]
 }

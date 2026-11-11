@@ -15,6 +15,7 @@ export const PERMISSIONS = {
   'sales.view': { group: 'Sales', label: 'See sales and receipts', roles: [...FRONT_OF_HOUSE, 'accountant'] },
   'sales.void': { group: 'Sales', label: 'Void sales', roles: MANAGERS },
   'returns.create': { group: 'Sales', label: 'Refund sales', roles: MANAGERS },
+  'returns.request': { group: 'Sales', label: 'Ask a manager for a refund or void', roles: FRONT_OF_HOUSE },
   'returns.approve': { group: 'Sales', label: 'Approve refund and void requests', roles: MANAGERS },
   'inventory.view': { group: 'Stock', label: 'See stock levels and movements', roles: ALL_ROLES },
   'inventory.adjust': { group: 'Stock', label: 'Receive, adjust, count and transfer stock', roles: STOCK_WRITERS },

@@ -28,6 +28,7 @@ import {
   ShiftQuery,
   UpdateCustomerGroupDto,
 } from './sales.dto.js';
+import { SaleRequestCreateController, SaleRequestsController, SaleRequestsService } from './sale-requests.js';
 import { SalesService } from './sales.service.js';
 
 /** Reports also open to accountants, who keep the books but don't sell. */
@@ -248,7 +249,7 @@ export class CustomerGroupsController {
 
 @Module({
   imports: [AccountingModule],
-  controllers: [SalesReportsController, SalesController, ShiftsController, CashTransfersController, CustomerGroupsController],
-  providers: [SalesService, SalesOpsService, SalesReportsService, CustomerGroupsService],
+  controllers: [SalesReportsController, SalesController, SaleRequestCreateController, SaleRequestsController, ShiftsController, CashTransfersController, CustomerGroupsController],
+  providers: [SalesService, SalesOpsService, SalesReportsService, CustomerGroupsService, SaleRequestsService],
 })
 export class SalesModule {}

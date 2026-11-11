@@ -2337,3 +2337,127 @@ describe('customers and suppliers on the phone', () => {
     expect(trail.body.map((r: any) => r.entity).sort()).toEqual(['Customer', 'Supplier']);
   });
 });
+
+describe('refund and void requests', () => {
+  let ownerT: Record<string, string>;
+  let managerT: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let cashierUserId: string;
+  let storeId: string;
+  let variantId: string;
+  let shiftId: string;
+  const pin = { 'X-Floatly-Pin': '7531' };
+  const R = '/api/v1/sale-requests';
+
+  const sell = async (quantity: number, method = 'cash') =>
+    (await http.post('/api/v1/sales').set(cashierT).send({ storeId, shiftId, lines: [{ variantId, quantity }], payments: [{ method, amount: String(quantity * 2) }] }).expect(201)).body;
+  const onHand = async () => (await http.get(`/api/v1/inventory/items/${variantId}`).set(ownerT)).body.stores.find((s: any) => s.storeId === storeId).onHand;
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Request Shop', 'requests@example.com')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    variantId = (await http.post('/api/v1/products').set(ownerT).send({ name: 'Bread', variants: [{ price: '2.00', costPrice: '1.20' }] }).expect(201)).body.variants[0].id;
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId, quantity: 50 }] }).expect(201);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'req-manager@example.com', fullName: 'Req Manager', password: 'password123', role: 'manager', pin: '7531' }).expect(201);
+    const c = await http.post('/api/v1/staff').set(ownerT).send({ email: 'req-cashier@example.com', fullName: 'Req Cashier', password: 'password123', role: 'cashier' }).expect(201);
+    cashierUserId = c.body.userId;
+    managerT = auth((await http.post('/api/v1/auth/login').send({ email: 'req-manager@example.com', password: 'password123', session: 'mobile' }).expect(200)).body.accessToken);
+    cashierT = auth((await http.post('/api/v1/auth/login').send({ email: 'req-cashier@example.com', password: 'password123' }).expect(200)).body.accessToken);
+    shiftId = (await http.post('/api/v1/shifts').set(cashierT).send({ storeId, openingFloat: { USD: '10.00' } }).expect(201)).body.id;
+  });
+
+  it("lets a cashier ask for a refund they can't make, and checks it first", async () => {
+    const sale = await sell(4);
+    const lineId = sale.lines[0].id;
+    await http.post(`/api/v1/sales/${sale.id}/returns`).set(cashierT).send({ lines: [{ lineId, quantity: 1 }], method: 'cash', reason: 'x' }).expect(403);
+    const ask = (body: object) => http.post(`/api/v1/sales/${sale.id}/requests`).set(cashierT).send({ kind: 'refund', method: 'cash', reason: 'Stale', shiftId, ...body });
+    await ask({ lines: [{ lineId, quantity: 5 }] }).expect(400);
+    await ask({ lines: [] }).expect(400);
+    await ask({ lines: [{ lineId, quantity: 1 }], method: undefined }).expect(400);
+    const res = await ask({ lines: [{ lineId, quantity: 2 }] }).expect(201);
+    expect(res.body).toMatchObject({ kind: 'refund', status: 'pending', amount: '4.00', saleNumber: sale.number, requestedByName: 'Req Cashier', storeName: 'Main Store', shiftId });
+    expect(res.body.lines).toEqual([{ lineId, quantity: '2.000', name: 'Bread' }]);
+    // One open request per sale.
+    expect((await ask({ lines: [{ lineId, quantity: 1 }] }).expect(409)).body.message).toMatch(/already has a request/);
+  });
+
+  it('shows managers everything waiting, oldest first, and cashiers only their own', async () => {
+    const waiting = await http.get(R).query({ status: 'pending' }).set(managerT).expect(200);
+    expect(waiting.body.total).toBe(1);
+    await http.get(R).query({ status: 'pending' }).set(cashierT).expect(403);
+    const mine = await http.get(R).query({ mine: true }).set(cashierT).expect(200);
+    expect(mine.body.items).toHaveLength(1);
+    expect((await http.get('/api/v1/dashboard').set(managerT).expect(200)).body.pendingRequests).toBe(1);
+    // A cashier can't decide.
+    const id = waiting.body.items[0].id;
+    await http.post(`${R}/${id}/approve`).set(cashierT).send({}).expect(403);
+    await http.post(`${R}/${id}/reject`).set(cashierT).send({ note: 'no' }).expect(403);
+  });
+
+  it('approves with the PIN: the refund comes from the cashier\'s shift, in their name, stock back', async () => {
+    const [req] = (await http.get(R).query({ status: 'pending' }).set(managerT)).body.items;
+    const before = await onHand();
+    expect((await http.post(`${R}/${req.id}/approve`).set(managerT).send({}).expect(403)).body.code).toBe('pin_required');
+    const res = await http.post(`${R}/${req.id}/approve`).set(managerT).set(pin).send({ note: 'OK, stale loaf' }).expect(200);
+    expect(res.body).toMatchObject({ status: 'approved', decidedByName: 'Req Manager', decisionNote: 'OK, stale loaf' });
+    expect(res.body.resultNumber).toMatch(/^R-/);
+    const ret = (await http.get(`/api/v1/sales/${res.body.resultSaleId}`).set(ownerT)).body;
+    expect(ret).toMatchObject({ type: 'return', total: '4.00', shiftId, salesperson: 'Req Cashier', originalSaleId: req.saleId });
+    expect(Number(await onHand()) - Number(before)).toBe(2);
+    // Decided once only.
+    await http.post(`${R}/${req.id}/approve`).set(managerT).set(pin).send({}).expect(400);
+    await http.post(`${R}/${req.id}/reject`).set(managerT).send({ note: 'too late' }).expect(400);
+    const trail = await http.get('/api/v1/audit-logs').query({ action: 'approve_refund' }).set(ownerT).expect(200);
+    expect(trail.body[0]).toMatchObject({ role: 'manager', platform: 'mobile', storeId, oldValue: { status: 'pending' }, newValue: { status: 'approved' } });
+  });
+
+  it('rejects with a note the cashier can read, and changes nothing', async () => {
+    const sale = await sell(1);
+    const req = (await http.post(`/api/v1/sales/${sale.id}/requests`).set(cashierT).send({ kind: 'void', reason: 'Rang it twice' }).expect(201)).body;
+    expect(req.amount).toBe('2.00');
+    await http.post(`${R}/${req.id}/reject`).set(managerT).send({}).expect(400);
+    await http.post(`${R}/${req.id}/reject`).set(managerT).send({ note: 'There were two customers' }).expect(200);
+    const mine = await http.get(R).query({ mine: true, status: 'decided' }).set(cashierT).expect(200);
+    expect(mine.body.items[0]).toMatchObject({ status: 'rejected', decisionNote: 'There were two customers', kind: 'void' });
+    expect((await http.get(`/api/v1/sales/${sale.id}`).set(ownerT)).body.status).toBe('completed');
+  });
+
+  it('approves a void, which voids the sale and puts the stock back', async () => {
+    const sale = await sell(3, 'card');
+    const before = await onHand();
+    const req = (await http.post(`/api/v1/sales/${sale.id}/requests`).set(cashierT).send({ kind: 'void', reason: 'Card declined after all' }).expect(201)).body;
+    await http.post(`${R}/${req.id}/approve`).set(managerT).set(pin).send({}).expect(200);
+    expect((await http.get(`/api/v1/sales/${sale.id}`).set(ownerT)).body.status).toBe('void');
+    expect(Number(await onHand()) - Number(before)).toBe(3);
+  });
+
+  it('lets the cashier take a request back, and nobody decide their own', async () => {
+    const sale = await sell(1);
+    const req = (await http.post(`/api/v1/sales/${sale.id}/requests`).set(cashierT).send({ kind: 'void', reason: 'Oops' }).expect(201)).body;
+    await http.post(`${R}/${req.id}/cancel`).set(managerT).expect(403);
+    await http.post(`${R}/${req.id}/cancel`).set(cashierT).expect(200);
+    await http.post(`${R}/${req.id}/approve`).set(managerT).set(pin).send({}).expect(400);
+
+    // A manager who asks (say, on a till) needs someone else to approve.
+    const managerSale = (await http.post('/api/v1/sales').set(ownerT).send({ storeId, lines: [{ variantId, quantity: 1 }], payments: [{ method: 'cash', amount: '2' }] }).expect(201)).body;
+    const own = (await http.post(`/api/v1/sales/${managerSale.id}/requests`).set(managerT).send({ kind: 'void', reason: 'Test' }).expect(201)).body;
+    expect((await http.post(`${R}/${own.id}/approve`).set(managerT).set(pin).send({}).expect(403)).body.message).toMatch(/Someone else/);
+    await http.post(`${R}/${own.id}/approve`).set(ownerT).send({}).expect(200); // the owner, on the web: no PIN asked
+  });
+
+  it("refunds from no shift when the cashier's has closed since", async () => {
+    const sale = await sell(1);
+    const req = (await http.post(`/api/v1/sales/${sale.id}/requests`).set(cashierT).send({ kind: 'refund', method: 'cash', reason: 'Late', shiftId, lines: [{ lineId: sale.lines[0].id, quantity: 1 }] }).expect(201)).body;
+    await http.post(`/api/v1/shifts/${shiftId}/close`).set(cashierT).send({ countedCash: { USD: '0.00' } }).expect(201);
+    const res = await http.post(`${R}/${req.id}/approve`).set(managerT).set(pin).send({}).expect(200);
+    expect((await http.get(`/api/v1/sales/${res.body.resultSaleId}`).set(ownerT)).body.shiftId).toBeNull();
+  });
+
+  it('is kept away from other businesses', async () => {
+    const other = auth((await signup('Other Request Shop', 'requests-other@example.com')).accessToken);
+    const [req] = (await http.get(R).query({ status: 'decided' }).set(managerT)).body.items;
+    await http.get(`${R}/${req.id}`).set(other).expect(404);
+    expect((await http.get(R).set(other).expect(200)).body.total).toBe(0);
+    expect(cashierUserId).toBeTruthy();
+  });
+});

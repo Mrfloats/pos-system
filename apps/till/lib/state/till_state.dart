@@ -341,6 +341,7 @@ class TillState extends ChangeNotifier {
     try {
       await refreshCatalog();
       await loadShift();
+      await loadMyRequests();
     } on ApiException {
       // Shown through [online] and [notice]; the till still works from what it has saved.
     }
@@ -359,6 +360,8 @@ class TillState extends ChangeNotifier {
 
   /// Signs out, so the next person enters their PIN. The basket stays.
   void lock() {
+    myRequests = [];
+    requestNotice = null;
     session = null;
     _sessionPin = null;
     shift = null;
@@ -757,6 +760,65 @@ class TillState extends ChangeNotifier {
 
   Future<Map<String, dynamic>> loadSale(String saleId) async => ((await _call((api) => api.get('/sales/$saleId'))) as Map).cast();
 
+  // ----- Asking a manager ---------------------------------------------------------------
+
+  /// Refund and void requests this cashier made lately, newest first.
+  List<Map<String, dynamic>> myRequests = [];
+
+  /// A manager just decided one of them: what to tell the cashier.
+  String? requestNotice;
+
+  /// The latest request for a sale, if any.
+  Map<String, dynamic>? requestFor(String saleId) => myRequests.where((r) => r['saleId'] == saleId).firstOrNull;
+
+  /// Asks a manager for a refund or a void of a sale the cashier can't do themselves.
+  Future<Map<String, dynamic>> askManager(String saleId, Map<String, dynamic> body) async {
+    final res = ((await _call((api) => api.post('/sales/$saleId/requests', {...body, 'shiftId': ?shift?.id}))) as Map).cast<String, dynamic>();
+    myRequests = [res, ...myRequests.where((r) => r['id'] != res['id'])];
+    notifyListeners();
+    return res;
+  }
+
+  /// Takes back a request no manager has answered yet.
+  Future<void> cancelRequest(String id) async {
+    final res = ((await _call((api) => api.post('/sale-requests/$id/cancel'))) as Map).cast<String, dynamic>();
+    myRequests = [for (final r in myRequests) r['id'] == id ? res : r];
+    notifyListeners();
+  }
+
+  /// Fetches the cashier's requests, and says so when one was decided since last time.
+  Future<void> loadMyRequests() async {
+    final s = session;
+    if (s == null || s.canManage) return;
+    final res = await _call((api) => api.get('/sale-requests', query: {'mine': 'true', 'pageSize': '30'})) as Map;
+    final next = [for (final r in res['items'] as List) (r as Map).cast<String, dynamic>()];
+    final before = {for (final r in myRequests) r['id']: r['status']};
+    for (final r in next) {
+      if (before[r['id']] == 'pending' && (r['status'] == 'approved' || r['status'] == 'rejected')) requestNotice = describeDecision(r);
+    }
+    myRequests = next;
+    notifyListeners();
+  }
+
+  void dismissRequestNotice() {
+    requestNotice = null;
+    notifyListeners();
+  }
+
+  /// "Rudo approved the refund for S-00042: give back $4.00 by cash (R-00012)."
+  String describeDecision(Map<String, dynamic> r) {
+    final who = (r['decidedByName'] as String?) ?? 'A manager';
+    final what = r['kind'] == 'refund' ? 'refund for ${r['saleNumber']}' : 'void of ${r['saleNumber']}';
+    final symbol = catalog?.currency(r['currencyCode'] as String).label ?? '';
+    if (r['status'] == 'approved') {
+      if (r['kind'] != 'refund') return '$who voided ${r['saleNumber']}.';
+      final how = PayMethod.parse(r['method'] as String?).label.toLowerCase();
+      return '$who approved the $what: give back ${formatMoney(toCents(r['amount']), symbol)} by $how (${r['resultNumber']}).';
+    }
+    final note = r['decisionNote'] as String?;
+    return '$who turned down the $what${note == null ? '.' : ': $note'}';
+  }
+
   Future<Map<String, dynamic>> refund(String saleId, Map<String, dynamic> body) async =>
       ((await _call((api) => api.post('/sales/$saleId/returns', {...body, 'shiftId': ?shift?.id}))) as Map).cast();
 
@@ -777,6 +839,8 @@ class TillState extends ChangeNotifier {
       if (session?.token != null && (c == null || DateTime.now().difference(c.syncedAt) > const Duration(minutes: 5))) {
         await refreshCatalog();
       }
+      // Waiting for a manager: check for an answer.
+      if (session?.token != null && myRequests.any((r) => r['status'] == 'pending')) await loadMyRequests();
     } on ApiException {
       // Shown through [online]; tried again on the next tick.
     }

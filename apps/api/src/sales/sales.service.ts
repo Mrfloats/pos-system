@@ -697,7 +697,16 @@ export class SalesService {
 
   /** Refunds part or all of a sale. Goods go back into stock unless restock is false. */
   createReturn(ctx: AuthContext, saleId: string, dto: CreateReturnDto) {
-    return this.dbs.withTenant(ctx, async (tx) => {
+    return this.dbs.withTenant(ctx, (tx) => this.createReturnIn(tx, ctx, saleId, dto));
+  }
+
+  /**
+   * Refunds part or all of a sale inside the caller's transaction. [salespersonId]
+   * names who gave the money back when it isn't the signed-in person (a cashier
+   * whose refund request a manager approved).
+   */
+  async createReturnIn(tx: Tx, ctx: AuthContext, saleId: string, dto: CreateReturnDto, opts: { salespersonId?: string } = {}) {
+    {
       const [sale] = await tx.select().from(sales).where(eq(sales.id, saleId)).limit(1);
       found(sale, 'Sale');
       if (sale.type !== 'sale' || sale.status !== 'completed') throw new BadRequestException('Only completed sales can be returned');
@@ -818,7 +827,7 @@ export class SalesService {
           shiftId,
           customerId: sale.customerId,
           customerName: sale.customerName,
-          salespersonId: ctx.userId,
+          salespersonId: opts.salespersonId ?? ctx.userId,
           originalSaleId: sale.id,
           currencyCode: sale.currencyCode,
           rate: sale.rate,
@@ -864,12 +873,17 @@ export class SalesService {
       await tx.update(sales).set({ journalEntryId: je.id }).where(eq(sales.id, ret.id));
       await this.audit.log(tx, ctx, 'create', 'Sale return', ret.id, { number, sale: sale.number, total: fromCents(total), reason: dto.reason }, { storeId: sale.storeId });
       return this.getIn(tx, ret.id);
-    });
+    }
   }
 
   /** Cancels a sale or return completely: stock and money go back as if it never happened. */
   voidSale(ctx: AuthContext, id: string) {
-    return this.dbs.withTenant(ctx, async (tx) => {
+    return this.dbs.withTenant(ctx, (tx) => this.voidSaleIn(tx, ctx, id));
+  }
+
+  /** Voids a sale or return inside the caller's transaction. */
+  async voidSaleIn(tx: Tx, ctx: AuthContext, id: string) {
+    {
       const [s] = await tx.select().from(sales).where(eq(sales.id, id)).limit(1);
       found(s, 'Sale');
       if (s.type === 'quotation') throw new BadRequestException('Cancel a quotation instead');
@@ -905,7 +919,7 @@ export class SalesService {
       await tx.update(saleLines).set({ kitchenStatus: null }).where(eq(saleLines.saleId, id));
       await this.audit.log(tx, ctx, 'void', s.type === 'sale' ? 'Sale' : 'Sale return', id, { number: s.number, total: s.total }, { storeId: s.storeId, old: { status: s.status }, new: { status: 'void' } });
       return this.getIn(tx, id);
-    });
+    }
   }
 
   // ----- Reading ------------------------------------------------------------------------

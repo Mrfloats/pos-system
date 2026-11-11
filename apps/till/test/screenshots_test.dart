@@ -185,4 +185,12 @@ void main() {
     await tester.pumpAndSettle();
     await shot('supplier-edit');
   }, skip: !on);
+
+  testWidgets('returns', (tester) async {
+    await open(tester, const Size(412, 900));
+    await goTo(tester, 'Returns');
+    await shot('returns');
+    await tapAndSettle(tester, find.text('Refund of S-00103'));
+    await shot('request');
+  }, skip: !on);
 }

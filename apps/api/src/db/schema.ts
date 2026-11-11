@@ -1213,6 +1213,64 @@ export const salePayments = pgTable(
 );
 
 /** Cash taken out of a store's till: banked, sent to head office, or moved to another store. */
+export const saleRequestKind = pgEnum('sale_request_kind', ['refund', 'void']);
+export const saleRequestStatus = pgEnum('sale_request_status', ['pending', 'approved', 'rejected', 'cancelled']);
+
+/** What a refund request asks to give back: lines of the sale and how many of each. */
+export interface RequestedLine {
+  lineId: string;
+  quantity: string;
+}
+
+/**
+ * A cashier asking for a refund or a void that they may not do themselves.
+ * An owner, admin or manager approves it (which makes the refund or void, as
+ * them, from the cashier's shift) or turns it down with a note.
+ */
+export const saleRequests = pgTable(
+  'sale_requests',
+  {
+    id: id(),
+    tenantId: tenantId(),
+    saleId: uuid('sale_id')
+      .notNull()
+      .references(() => sales.id, { onDelete: 'cascade' }),
+    kind: saleRequestKind('kind').notNull(),
+    status: saleRequestStatus('status').notNull().default('pending'),
+    /** Refunds: what comes back. */
+    lines: jsonb('lines').$type<RequestedLine[]>(),
+    /** Refunds: how the money goes back. */
+    method: paymentMethod('method'),
+    restock: boolean('restock').notNull().default(true),
+    reason: text('reason').notNull(),
+    /** What it comes to, in the sale's currency, worked out when asked. */
+    amount: money('amount').notNull(),
+    currencyCode: text('currency_code').notNull(),
+    storeId: uuid('store_id')
+      .notNull()
+      .references(() => stores.id, { onDelete: 'cascade' }),
+    deviceId: uuid('device_id').references(() => devices.id, { onDelete: 'set null' }),
+    /** The cashier's shift when they asked: an approved cash refund comes out of that drawer. */
+    shiftId: uuid('shift_id').references(() => shifts.id, { onDelete: 'set null' }),
+    requestedBy: uuid('requested_by').references(() => users.id, { onDelete: 'set null' }),
+    decidedBy: uuid('decided_by').references(() => users.id, { onDelete: 'set null' }),
+    decidedAt: timestamp('decided_at', { withTimezone: true }),
+    decisionNote: text('decision_note'),
+    /** The refund made, or the sale voided. */
+    resultSaleId: uuid('result_sale_id').references(() => sales.id, { onDelete: 'set null' }),
+    createdAt: createdAt(),
+  },
+  (t) => [
+    index('sale_requests_tenant_status_idx').on(t.tenantId, t.status, t.createdAt),
+    index('sale_requests_requested_by_idx').on(t.tenantId, t.requestedBy, t.createdAt),
+    // One open request per sale at a time.
+    uniqueIndex('sale_requests_pending_uq')
+      .on(t.saleId)
+      .where(sql`${t.status} = 'pending'`),
+    tenantIsolation(t),
+  ],
+);
+
 export const cashTransfers = pgTable(
   'cash_transfers',
   {
