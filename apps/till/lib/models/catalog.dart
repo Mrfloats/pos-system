@@ -56,9 +56,13 @@ class TaxRate {
       name = j['name'] as String,
       code = j['code'] as String? ?? '',
       rate = j['rate']?.toString() ?? '0',
-      inclusive = j['inclusive'] as bool? ?? true;
+      inclusive = j['inclusive'] as bool? ?? true,
+      fiscalTaxId = j['fiscalTaxId'] as int?;
 
   final String id, name, code;
+
+  /// The ZIMRA tax this rate is, when the backoffice says so (else matched by percent).
+  final int? fiscalTaxId;
 
   /// Percentage, e.g. "15.50".
   final String rate;
