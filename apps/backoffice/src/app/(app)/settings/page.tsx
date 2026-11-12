@@ -216,6 +216,7 @@ function Tills() {
           <tr>
             <Th>Till</Th>
             <Th>Store</Th>
+            <Th className="hidden md:table-cell">ZIMRA</Th>
             <Th>Last used</Th>
             <Th align="right">
               <span className="sr-only">Actions</span>
@@ -223,7 +224,7 @@ function Tills() {
           </tr>
         </thead>
         <tbody>
-          {devices.data?.length === 0 && <TableMessage colSpan={4}>No tills yet. Install Floatly Till on a device and sign in on it to add one.</TableMessage>}
+          {devices.data?.length === 0 && <TableMessage colSpan={5}>No tills yet. Install Floatly Till on a device and sign in on it to add one.</TableMessage>}
           {devices.data?.map((d) => (
             <tr key={d.id}>
               <Td>
@@ -231,6 +232,9 @@ function Tills() {
                 {!d.active ? <Badge>Switched off</Badge> : !d.registered && <Badge tone="amber">Not set up</Badge>}
               </Td>
               <Td className="text-ink-soft">{storeName(d.storeId)}</Td>
+              <Td className="hidden text-ink-soft md:table-cell">
+                <FiscalStatus device={d} />
+              </Td>
               <Td className="text-ink-soft">{dateTime(d.lastSeenAt)}</Td>
               <Td align="right">
                 {can(...ADMINS) && (
@@ -268,6 +272,31 @@ function Tills() {
 }
 
 // ----- Tax rates -------------------------------------------------------------------
+
+/** A till's ZIMRA status in a few words: its device ID, fiscal day, and receipts not yet with ZIMRA. */
+function FiscalStatus({ device: d }: { device: Device }) {
+  const s = d.fiscalState;
+  if (!d.fiscalDeviceId || !s) return <span className="text-ink-faint">Not registered</span>;
+  const day = s.dayStatus === "FiscalDayOpened" ? `day ${s.dayNo} open` : s.dayStatus === "FiscalDayCloseFailed" ? `day ${s.dayNo} didn't close` : s.dayNo ? `day ${s.dayNo} closed` : "no day yet";
+  return (
+    <span title={s.lastError ?? `Reported ${dateTime(s.reportedAt)}`}>
+      {d.fiscalDeviceId}
+      {s.environment === "test" && " (test)"} · {day}
+      {s.unsent > 0 && (
+        <>
+          {" "}
+          <Badge tone="amber">{s.unsent} not sent</Badge>
+        </>
+      )}
+      {s.lastError && (
+        <>
+          {" "}
+          <Badge tone="red">Problem</Badge>
+        </>
+      )}
+    </span>
+  );
+}
 
 function TaxRates() {
   const { can } = useSession();

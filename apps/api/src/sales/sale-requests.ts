@@ -75,6 +75,7 @@ export class SaleRequestsService {
         amount = await this.refundAmount(tx, saleId, dto.lines);
       } else {
         if (sale.type === 'quotation') throw new BadRequestException('Cancel a quotation instead');
+        if (sale.fiscal) throw new BadRequestException('This was reported to ZIMRA, so it can’t be voided. Ask for a refund instead.');
         if (sale.type === 'sale') {
           const [r] = await tx
             .select({ n: count() })

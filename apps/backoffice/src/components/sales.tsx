@@ -21,7 +21,7 @@ import {
 } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useId, useRef, useState } from "react";
+import { Fragment, useEffect, useId, useRef, useState } from "react";
 import { StoreSelect } from "@/components/stock";
 import { useToast } from "@/components/toast";
 import { Badge, Button, Checkbox, Dialog, Field, FormError, Input, Select, Spinner, Table, TableMessage, Td, Textarea, Th } from "@/components/ui";
@@ -60,6 +60,49 @@ const FISCAL: Record<Sale["fiscalStatus"], { label: string; tone: "neutral" | "g
   failed: { label: "Failed", tone: "red" },
 };
 export const FiscalBadge = ({ status }: { status: Sale["fiscalStatus"] }) => <Badge tone={FISCAL[status].tone}>{FISCAL[status].label}</Badge>;
+
+const ERROR_TONE: Record<string, string> = { Red: "text-danger", Yellow: "text-amber-ink", Grey: "text-ink-soft" };
+
+/** The ZIMRA fiscal invoice (or credit note) the till issued for a sale, and what ZIMRA said about it. */
+function FiscalCard({ sale }: { sale: Sale }) {
+  const f = sale.fiscal!;
+  const rows: [string, string | number][] = [
+    ["Verification code", f.verificationCode],
+    ["Invoice no.", f.invoiceNo],
+    ["Fiscal day", `${f.fiscalDayNo}, receipt ${f.counter}`],
+    ["ZIMRA device", f.deviceId],
+  ];
+  if (f.receiptId) rows.push(["ZIMRA receipt ID", f.receiptId]);
+  return (
+    <section className="card p-5">
+      <h2 className="mb-2 flex items-center justify-between gap-2 text-sm font-semibold">
+        ZIMRA {f.receiptType === "CreditNote" ? "credit note" : f.receiptType === "DebitNote" ? "debit note" : "fiscal invoice"}
+        <FiscalBadge status={sale.fiscalStatus} />
+      </h2>
+      <dl className="grid grid-cols-[auto_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+        {rows.map(([label, value]) => (
+          <Fragment key={label}>
+            <dt className="text-ink-soft">{label}</dt>
+            <dd className={`text-right tabular-nums break-words ${label === "Verification code" ? "font-mono" : ""}`}>{value}</dd>
+          </Fragment>
+        ))}
+      </dl>
+      {sale.fiscalStatus === "pending" && <p className="mt-3 text-xs text-ink-soft">Printed with its QR code; the till sends it to ZIMRA when it&apos;s online.</p>}
+      {!!f.errors?.length && (
+        <ul className="mt-3 flex flex-col gap-1 text-xs">
+          {f.errors.map((e) => (
+            <li key={e.code} className={ERROR_TONE[e.color] ?? "text-ink-soft"}>
+              {e.code}: {e.description}
+            </li>
+          ))}
+        </ul>
+      )}
+      <a href={f.qrCode} target="_blank" rel="noreferrer" className="mt-3 inline-block text-sm text-ledger-700 hover:underline print:hidden">
+        Check it on ZIMRA&apos;s site
+      </a>
+    </section>
+  );
+}
 
 const today = () => new Date().toLocaleDateString("en-CA");
 const daysAgo = (n: number) => {
@@ -774,7 +817,8 @@ export function SaleView({ id }: { id: string }) {
           <Button variant="secondary" onClick={() => window.print()}>
             <Printer className="size-4" aria-hidden /> Print
           </Button>
-          {s.type !== "quotation" && s.status === "completed" && can(...MANAGERS) && (
+          {/* ZIMRA has no void: a fiscalised sale is undone with a refund (a credit note). */}
+          {s.type !== "quotation" && s.status === "completed" && !s.fiscal && can(...MANAGERS) && (
             <Button variant="danger" busy={act.isPending} onClick={() => confirm(`Void ${s.number}? Stock and money go back as if it never happened.`) && act.mutate("void")}>
               Void
             </Button>
@@ -874,6 +918,7 @@ export function SaleView({ id }: { id: string }) {
               </ul>
             </section>
           )}
+          {s.fiscal && <FiscalCard sale={s} />}
           {!!s.related?.length && (
             <section className="card p-5 print:hidden">
               <h2 className="mb-2 text-sm font-semibold">Linked</h2>

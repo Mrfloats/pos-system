@@ -179,6 +179,27 @@ export interface Device {
   registered: boolean;
   lastSeenAt: string | null;
   active: boolean;
+  /** ZIMRA fiscal device ID, once the till has registered with ZIMRA. */
+  fiscalDeviceId?: number | null;
+  fiscalSerialNo?: string | null;
+  fiscalState?: FiscalDeviceState | null;
+}
+
+/** A till's ZIMRA status, as it last reported it. */
+export interface FiscalDeviceState {
+  environment: "test" | "live";
+  taxpayerName?: string | null;
+  vatNumber?: string | null;
+  branchName?: string | null;
+  dayStatus?: string | null;
+  dayNo?: number | null;
+  dayOpenedAt?: string | null;
+  /** Receipts signed but not yet accepted by ZIMRA. */
+  unsent: number;
+  lastGlobalNo?: number | null;
+  certificateValidTill?: string | null;
+  lastError?: string | null;
+  reportedAt: string;
 }
 
 export interface Category {
@@ -258,6 +279,8 @@ export interface Product {
   soldByWeight: boolean;
   kitchenStation: string | null;
   imageUrl: string | null;
+  /** Harmonized System code for ZIMRA fiscal receipts (4 or 8 digits). */
+  hsCode: string | null;
   active: boolean;
   variants: Variant[];
   modifierGroups?: { id: string; name: string }[];
@@ -608,12 +631,32 @@ export interface Sale {
   costBase: string;
   itemCount: string;
   fiscalStatus: "not_required" | "pending" | "submitted" | "failed";
+  /** ZIMRA invoice number, once a till fiscalised it. */
+  fiscalReference?: string | null;
+  fiscal?: SaleFiscal | null;
   note: string | null;
   validUntil: string | null;
   journalEntryId: string | null;
   lines?: SaleLine[];
   payments?: SalePayment[];
   related?: { id: string; number: string; type: SaleType; status: SaleStatus; total: string; soldAt: string }[];
+}
+
+/** A sale's ZIMRA fiscal invoice or credit note, as the till issued it. */
+export interface SaleFiscal {
+  deviceId: number;
+  fiscalDayNo: number;
+  globalNo: number;
+  counter: number;
+  invoiceNo: string;
+  receiptType: "FiscalInvoice" | "CreditNote" | "DebitNote";
+  date: string;
+  /** ZIMRA's link for checking the receipt (the QR code's content). */
+  qrCode: string;
+  verificationCode: string;
+  receiptId?: number | null;
+  serverDate?: string | null;
+  errors?: { code: string; color: string; description: string }[];
 }
 
 export interface CustomerGroup {

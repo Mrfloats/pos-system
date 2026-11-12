@@ -8,6 +8,7 @@ import { type AuthContext } from '../common/auth-context.js';
 import { assertOwned } from '../common/ownership.js';
 import { found, likeEscape } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
+import { fiscalColumns } from './fiscal.js';
 import {
   customerGroups,
   customers,
@@ -495,7 +496,8 @@ export class SalesService {
         totalBase: fromCents(totalBase),
         costBase: fromCents(costBase),
         itemCount: formatFixed(sum(lines.map((l) => parseFixed(l.quantity, 3))), 3),
-        fiscalStatus: info.fiscal,
+        // A till that fiscalises sends the ZIMRA receipt it printed; otherwise it's waiting (VAT-registered) or not needed.
+        ...(dto.fiscal ? fiscalColumns(dto.fiscal) : { fiscalStatus: info.fiscal }),
         note: dto.note ?? null,
         clientId: dto.clientId ?? null,
         createdBy: ctx.userId,
@@ -710,6 +712,7 @@ export class SalesService {
       const [sale] = await tx.select().from(sales).where(eq(sales.id, saleId)).limit(1);
       found(sale, 'Sale');
       if (sale.type !== 'sale' || sale.status !== 'completed') throw new BadRequestException('Only completed sales can be returned');
+      await assertOwned(tx, devices, [dto.deviceId], 'till');
       const info = await this.tenantInfo(tx);
       const day = localDate(info.tz);
       const original = await tx.select().from(saleLines).where(eq(saleLines.saleId, saleId));
@@ -824,6 +827,7 @@ export class SalesService {
           type: 'return',
           status: 'completed',
           storeId: sale.storeId,
+          deviceId: dto.deviceId ?? null,
           shiftId,
           customerId: sale.customerId,
           customerName: sale.customerName,
@@ -838,7 +842,8 @@ export class SalesService {
           totalBase: fromCents(totalBase),
           costBase: fromCents(costBase),
           itemCount: formatFixed(sum(lines.map((l) => parseFixed(l.quantity, 3))), 3),
-          fiscalStatus: info.fiscal,
+          // The till's ZIMRA credit note; a refund made elsewhere waits for one (VAT-registered) or needs none.
+          ...(dto.fiscal ? fiscalColumns(dto.fiscal) : { fiscalStatus: info.fiscal }),
           note: dto.reason,
           createdBy: ctx.userId,
         })
@@ -888,6 +893,14 @@ export class SalesService {
       found(s, 'Sale');
       if (s.type === 'quotation') throw new BadRequestException('Cancel a quotation instead');
       if (s.status !== 'completed') throw new BadRequestException(`This ${s.type} is already ${s.status}`);
+      // ZIMRA has no "void": once a fiscal receipt exists, only a credit note (a refund) can undo it.
+      if (s.fiscal) {
+        throw new BadRequestException(
+          s.type === 'sale'
+            ? 'This sale was reported to ZIMRA, so it can’t be voided. Refund it instead: the refund is reported as a credit note.'
+            : 'This refund was reported to ZIMRA as a credit note, so it can’t be voided.',
+        );
+      }
       if (s.type === 'sale') {
         const [r] = await tx
           .select({ n: count() })

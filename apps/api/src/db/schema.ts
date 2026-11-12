@@ -309,12 +309,71 @@ export const devices = pgTable(
     kind: deviceKind('kind').notNull().default('till'),
     tokenHash: text('token_hash'),
     lastSeenAt: timestamp('last_seen_at', { withTimezone: true }),
+    /** ZIMRA fiscal device ID, once the till has registered with FDMS (the till keeps the key itself). */
+    fiscalDeviceId: integer('fiscal_device_id'),
+    fiscalSerialNo: text('fiscal_serial_no'),
+    /** What the till last reported about its ZIMRA fiscal day and queue. */
+    fiscalState: jsonb('fiscal_state').$type<FiscalDeviceState>(),
     active: boolean('active').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
   },
-  (t) => [uniqueIndex('devices_store_code_uq').on(t.storeId, t.code), tenantIsolation(t)],
+  (t) => [
+    uniqueIndex('devices_store_code_uq').on(t.storeId, t.code),
+    // One ZIMRA device can't be two tills.
+    uniqueIndex('devices_tenant_fiscal_uq')
+      .on(t.tenantId, t.fiscalDeviceId)
+      .where(sql`${t.fiscalDeviceId} IS NOT NULL`),
+    tenantIsolation(t),
+  ],
 );
+
+/** A till's ZIMRA status, as it last reported it. */
+export interface FiscalDeviceState {
+  /** "test" or "live" (which ZIMRA server). */
+  environment: string;
+  taxpayerName?: string | null;
+  taxpayerTin?: string | null;
+  vatNumber?: string | null;
+  branchName?: string | null;
+  /** FiscalDayOpened, FiscalDayClosed, FiscalDayCloseInitiated or FiscalDayCloseFailed. */
+  dayStatus?: string | null;
+  dayNo?: number | null;
+  /** When the current fiscal day was opened (ISO). */
+  dayOpenedAt?: string | null;
+  /** Receipts signed but not yet accepted by ZIMRA. */
+  unsent: number;
+  /** Last receipt number issued (receiptGlobalNo). */
+  lastGlobalNo?: number | null;
+  certificateValidTill?: string | null;
+  lastError?: string | null;
+  /** When the till sent this (ISO). */
+  reportedAt: string;
+}
+
+/** A sale's ZIMRA receipt (fiscal invoice or credit note), as the till signed and sent it. */
+export interface SaleFiscal {
+  /** ZIMRA device ID of the till that issued it. */
+  deviceId: number;
+  fiscalDayNo: number;
+  /** receiptGlobalNo: the device's running receipt number. */
+  globalNo: number;
+  /** receiptCounter: its number within the fiscal day. */
+  counter: number;
+  invoiceNo: string;
+  receiptType: 'FiscalInvoice' | 'CreditNote' | 'DebitNote';
+  /** receiptDate as sent to ZIMRA: the till's local time, no time zone. */
+  date: string;
+  qrCode: string;
+  verificationCode: string;
+  hash: string;
+  signature: string;
+  /** ZIMRA's receipt ID and time, once it accepted the receipt. */
+  receiptId?: number | null;
+  serverDate?: string | null;
+  /** ZIMRA's validation errors, if any (Grey, Yellow or Red). */
+  errors?: { code: string; color: string; description: string }[];
+}
 
 // ---------------------------------------------------------------------------
 // Money and tax
@@ -410,6 +469,8 @@ export const products = pgTable(
     /** Restaurant: which kitchen/bar printer station prepares it. */
     kitchenStation: text('kitchen_station'),
     imageUrl: text('image_url'),
+    /** Harmonized System code (4 or 8 digits). ZIMRA wants one on every receipt line from a VAT-registered business. */
+    hsCode: text('hs_code'),
     active: boolean('active').notNull().default(true),
     createdAt: createdAt(),
     updatedAt: updatedAt(),
@@ -1104,7 +1165,9 @@ export const sales = pgTable(
     costBase: money('cost_base').notNull().default('0'),
     itemCount: qty('item_count').notNull().default('0'),
     fiscalStatus: fiscalStatus('fiscal_status').notNull().default('not_required'),
+    /** ZIMRA invoice number (deviceID-globalNo) once fiscalised on a till. */
     fiscalReference: text('fiscal_reference'),
+    fiscal: jsonb('fiscal').$type<SaleFiscal>(),
     note: text('note'),
     /** Quotations: valid until this day. */
     validUntil: date('valid_until', { mode: 'string' }),

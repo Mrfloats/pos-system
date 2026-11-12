@@ -173,6 +173,7 @@ export class ProductsService {
           soldByWeight: dto.soldByWeight,
           kitchenStation: dto.kitchenStation,
           imageUrl: dto.imageUrl,
+          hsCode: dto.hsCode,
           active: dto.active,
         })
         .returning();

@@ -2547,3 +2547,163 @@ describe('notifications', () => {
     expect(kinds((await http.get(N).set(other).expect(200)).body)).toEqual(['end_of_day']);
   });
 });
+
+describe('ZIMRA fiscal receipts from the till', () => {
+  let ownerT: Record<string, string>;
+  let tillT: Record<string, string>;
+  let till2T: Record<string, string>;
+  let storeId: string;
+  let variantId: string;
+  let deviceId: string;
+
+  // What a till sends for a receipt it signed and printed.
+  const receipt = (globalNo: number, extra: object = {}) => ({
+    deviceId: 4021,
+    fiscalDayNo: 3,
+    globalNo,
+    counter: globalNo,
+    invoiceNo: `4021-${globalNo}`,
+    receiptType: 'FiscalInvoice',
+    date: '2026-11-12T10:15:00',
+    qrCode: `https://fdmstest.zimra.co.zw/000000402112112026${String(globalNo).padStart(10, '0')}ABCDEF0123456789`,
+    verificationCode: 'ABCD-EF01-2345-6789',
+    hash: 'aGFzaA==',
+    signature: 'c2lnbmF0dXJl',
+    status: 'pending',
+    ...extra,
+  });
+  const sell = async (fiscal?: object, clientId = uuidv7()) =>
+    (await http.post('/api/v1/sales').set(tillT).send({ storeId, deviceId, clientId, lines: [{ variantId, quantity: 1 }], payments: [{ method: 'cash', amount: '2.00' }], fiscal }).expect(201)).body;
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Fiscal Shop', 'fiscal@example.com')).accessToken);
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'fiscal.cashier@example.com', fullName: 'Fiscal Cashier', password: 'password123', role: 'cashier', pin: '2468', storeIds: [storeId] }).expect(201);
+    const pair = async (code: string) => {
+      const id = (await http.post('/api/v1/devices').set(ownerT).send({ storeId, name: `Till ${code}`, code }).expect(201)).body.id;
+      const deviceToken = (await http.post(`/api/v1/devices/${id}/token`).set(ownerT).expect(201)).body.token;
+      return { id, t: auth((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '2468' }).expect(200)).body.accessToken) };
+    };
+    const one = await pair('T01');
+    deviceId = one.id;
+    tillT = one.t;
+    till2T = (await pair('T02')).t;
+  });
+
+  it('keeps HS codes and ZIMRA tax IDs, and gives them to the till', async () => {
+    const bad = await http.post('/api/v1/products').set(ownerT).send({ name: 'Bread', hsCode: '123', variants: [{ price: '2.00' }] }).expect(400);
+    expect(JSON.stringify(bad.body.message)).toMatch(/hsCode must be 4 or 8 digits/);
+    const product = await http.post('/api/v1/products').set(ownerT).send({ name: 'Bread', hsCode: '19059000', variants: [{ price: '2.00', costPrice: '1.20' }] }).expect(201);
+    variantId = product.body.variants[0].id;
+    await http.post('/api/v1/inventory/movements').set(ownerT).send({ storeId, type: 'receive', lines: [{ variantId, quantity: 20 }] }).expect(201);
+    const vat = (await http.get('/api/v1/tax-rates').set(ownerT)).body.find((r: any) => r.code === 'VAT');
+    await http.patch(`/api/v1/tax-rates/${vat.id}`).set(ownerT).send({ fiscalTaxId: 517 }).expect(200);
+
+    const catalog = await http.get('/api/v1/till/catalog').query({ storeId }).set(tillT).expect(200);
+    expect(catalog.body.products.find((p: any) => p.name === 'Bread').hsCode).toBe('19059000');
+    expect(catalog.body.taxRates.find((r: any) => r.code === 'VAT').fiscalTaxId).toBe(517);
+    // Cleared with null.
+    await http.patch(`/api/v1/products/${product.body.id}`).set(ownerT).send({ hsCode: null }).expect(200);
+    expect((await http.get(`/api/v1/products/${product.body.id}`).set(ownerT)).body.hsCode).toBeNull();
+    await http.patch(`/api/v1/products/${product.body.id}`).set(ownerT).send({ hsCode: '1905' }).expect(200);
+  });
+
+  it('records the fiscal invoice a till sends with a sale', async () => {
+    const sale = await sell(receipt(1));
+    expect(sale).toMatchObject({ fiscalStatus: 'pending', fiscalReference: '4021-1', deviceId });
+    expect(sale.fiscal).toMatchObject({ deviceId: 4021, fiscalDayNo: 3, globalNo: 1, receiptType: 'FiscalInvoice', verificationCode: 'ABCD-EF01-2345-6789', receiptId: null, errors: [] });
+    // Sent twice (offline retry): still one sale.
+    const again = await http
+      .post('/api/v1/sales')
+      .set(tillT)
+      .send({ storeId, clientId: sale.clientId, lines: [{ variantId, quantity: 1 }], payments: [{ method: 'cash', amount: '2.00' }], fiscal: receipt(1) })
+      .expect(201);
+    expect(again.body.id).toBe(sale.id);
+    for (const wrong of [{ verificationCode: 'abcd' }, { date: '2026-11-12 10:15' }, { receiptType: 'Invoice' }, { globalNo: 0 }]) {
+      await http.post('/api/v1/sales').set(tillT).send({ storeId, lines: [{ variantId, quantity: 1 }], payments: [{ method: 'cash', amount: '2.00' }], fiscal: receipt(9, wrong) }).expect(400);
+    }
+  });
+
+  it("takes ZIMRA's answers from the till, and hands back the ones for sales it hasn't got yet", async () => {
+    const sale = await sell(receipt(2));
+    const notYet = uuidv7();
+    const res = await http
+      .post('/api/v1/till/fiscal-receipts')
+      .set(tillT)
+      .send({ receipts: [{ clientId: sale.clientId, status: 'submitted', receiptId: 9876543210, serverDate: '2026-11-12T10:15:02' }, { clientId: notYet, status: 'submitted' }] })
+      .expect(200);
+    expect(res.body).toEqual({ updated: [sale.clientId], missing: [notYet] });
+    const got = (await http.get(`/api/v1/sales/${sale.id}`).set(ownerT)).body;
+    expect(got.fiscalStatus).toBe('submitted');
+    expect(got.fiscal).toMatchObject({ receiptId: 9876543210, serverDate: '2026-11-12T10:15:02', verificationCode: 'ABCD-EF01-2345-6789' });
+
+    const red = [{ code: 'RCPT026', color: 'Red', description: 'Incorrectly calculated tax amount' }];
+    await http.post('/api/v1/till/fiscal-receipts').set(tillT).send({ receipts: [{ saleId: sale.id, status: 'failed', errors: red }] }).expect(200);
+    const failed = (await http.get(`/api/v1/sales/${sale.id}`).set(ownerT)).body;
+    expect(failed.fiscalStatus).toBe('failed');
+    expect(failed.fiscal.errors).toEqual(red);
+    expect(failed.fiscal.receiptId).toBe(9876543210);
+    await http.post('/api/v1/till/fiscal-receipts').set(tillT).send({ receipts: [{ status: 'submitted' }] }).expect(400);
+  });
+
+  it("won't void a sale reported to ZIMRA: the refund is a credit note", async () => {
+    const sale = await sell(receipt(3));
+    expect((await http.post(`/api/v1/sales/${sale.id}/void`).set(ownerT).send({}).expect(400)).body.message).toMatch(/reported to ZIMRA.*Refund it instead/);
+    const ask = await http.post(`/api/v1/sales/${sale.id}/requests`).set(tillT).send({ kind: 'void', reason: 'Wrong item' }).expect(400);
+    expect(ask.body.message).toMatch(/Ask for a refund instead/);
+
+    const ret = await http
+      .post(`/api/v1/sales/${sale.id}/returns`)
+      .set(ownerT)
+      .send({ lines: [{ lineId: sale.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Stale', deviceId, fiscal: receipt(4, { receiptType: 'CreditNote' }) })
+      .expect(201);
+    expect(ret.body).toMatchObject({ type: 'return', deviceId, fiscalStatus: 'pending', fiscalReference: '4021-4' });
+    expect(ret.body.fiscal.receiptType).toBe('CreditNote');
+    expect((await http.post(`/api/v1/sales/${ret.body.id}/void`).set(ownerT).send({}).expect(400)).body.message).toMatch(/credit note/);
+
+    // A sale the till didn't fiscalise can still be voided.
+    const plain = await sell();
+    expect(plain).toMatchObject({ fiscalStatus: 'not_required', fiscal: null });
+    await http.post(`/api/v1/sales/${plain.id}/void`).set(ownerT).send({}).expect(201);
+  });
+
+  it('adds the credit note to a refund made without one (approved on a phone)', async () => {
+    const sale = await sell(receipt(5));
+    const ret = await http.post(`/api/v1/sales/${sale.id}/returns`).set(ownerT).send({ lines: [{ lineId: sale.lines[0].id, quantity: 1 }], method: 'cash', reason: 'Approved on phone' }).expect(201);
+    expect(ret.body.fiscal).toBeNull();
+    const res = await http
+      .post('/api/v1/till/fiscal-receipts')
+      .set(tillT)
+      .send({ receipts: [{ saleId: ret.body.id, status: 'pending', receipt: receipt(6, { receiptType: 'CreditNote' }) }] })
+      .expect(200);
+    expect(res.body.updated).toEqual([ret.body.id]);
+    expect((await http.get(`/api/v1/sales/${ret.body.id}`).set(ownerT)).body).toMatchObject({ fiscalStatus: 'pending', fiscalReference: '4021-6' });
+    // A receipt already there is never replaced, only its status updated.
+    await http
+      .post('/api/v1/till/fiscal-receipts')
+      .set(tillT)
+      .send({ receipts: [{ saleId: ret.body.id, status: 'submitted', receipt: receipt(7, { receiptType: 'CreditNote' }) }] })
+      .expect(200);
+    const after = (await http.get(`/api/v1/sales/${ret.body.id}`).set(ownerT)).body;
+    expect(after).toMatchObject({ fiscalStatus: 'submitted', fiscalReference: '4021-6' });
+    expect(after.fiscal.globalNo).toBe(6);
+  });
+
+  it('lets each till report its ZIMRA registration, one till per ZIMRA device', async () => {
+    const state = { environment: 'test', taxpayerName: 'Fiscal Shop (Pvt) Ltd', dayStatus: 'FiscalDayOpened', dayNo: 3, dayOpenedAt: '2026-11-12T06:00:00.000Z', unsent: 2, lastGlobalNo: 7 };
+    const res = await http.put('/api/v1/till/fiscal-device').set(tillT).send({ fiscalDeviceId: 4021, serialNo: 'FLT-T01', state }).expect(200);
+    expect(res.body).toMatchObject({ fiscalDeviceId: 4021, fiscalSerialNo: 'FLT-T01', fiscalState: state });
+    expect(res.body.fiscalState.reportedAt).toBeTruthy();
+    const listed = (await http.get('/api/v1/devices').set(ownerT).expect(200)).body.find((d: any) => d.code === 'T01');
+    expect(listed).toMatchObject({ fiscalDeviceId: 4021, fiscalState: { unsent: 2, dayStatus: 'FiscalDayOpened' } });
+
+    const clash = await http.put('/api/v1/till/fiscal-device').set(till2T).send({ fiscalDeviceId: 4021, serialNo: 'FLT-T02', state: { ...state, unsent: 0 } }).expect(409);
+    expect(clash.body.message).toMatch(/already set up on till T01/);
+    await http.put('/api/v1/till/fiscal-device').set(ownerT).send({ fiscalDeviceId: 1 }).expect(400);
+    await http.put('/api/v1/till/fiscal-device').set(tillT).send({ fiscalDeviceId: 4021, state: { environment: 'staging', unsent: 0 } }).expect(400);
+
+    const cleared = await http.put('/api/v1/till/fiscal-device').set(tillT).send({ fiscalDeviceId: null }).expect(200);
+    expect(cleared.body).toMatchObject({ fiscalDeviceId: null, fiscalSerialNo: null, fiscalState: null });
+    await http.put('/api/v1/till/fiscal-device').set(till2T).send({ fiscalDeviceId: 4021, serialNo: 'FLT-T02', state: { ...state, unsent: 0 } }).expect(200);
+  });
+});

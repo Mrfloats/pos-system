@@ -86,6 +86,7 @@ export function ProductForm({ product }: { product?: Product }) {
     trackStock: product?.trackStock ?? !isRestaurant,
     soldByWeight: product?.soldByWeight ?? false,
     kitchenStation: product?.kitchenStation ?? "",
+    hsCode: product?.hsCode ?? "",
     modifierGroupIds: product?.modifierGroups?.map((g) => g.id) ?? [],
   });
   const [variants, setVariants] = useState<VariantForm[]>(
@@ -131,6 +132,7 @@ export function ProductForm({ product }: { product?: Product }) {
         trackStock: form.kind === "standard" ? form.trackStock : false,
         soldByWeight: form.soldByWeight,
         kitchenStation: blank(form.kitchenStation),
+        hsCode: blank(form.hsCode) ?? (product ? null : undefined),
         modifierGroupIds: form.modifierGroupIds,
         variants: variants.map((v) => ({
           id: v.id,
@@ -242,6 +244,17 @@ export function ProductForm({ product }: { product?: Product }) {
                     </option>
                   ))}
                 </Select>
+              )}
+            </Field>
+            <Field label="HS code" hint="For ZIMRA fiscal receipts: 4 or 8 digits (8 for zero-rated and exempt items). Needed if you're VAT-registered.">
+              {(id) => (
+                <Input
+                  id={id}
+                  inputMode="numeric"
+                  maxLength={8}
+                  value={form.hsCode}
+                  onChange={(e) => setForm({ ...form, hsCode: e.target.value.replace(/\D/g, "") })}
+                />
               )}
             </Field>
             <Field label="Description (optional)" className="md:col-span-2">

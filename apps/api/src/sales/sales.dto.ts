@@ -7,6 +7,7 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsISO8601,
   IsObject,
   IsOptional,
@@ -14,7 +15,9 @@ import {
   IsUUID,
   Length,
   Matches,
+  Max,
   MaxLength,
+  Min,
   ValidateNested,
 } from 'class-validator';
 import { IsDay, IsRate } from '../accounting/accounting.dto.js';
@@ -53,6 +56,47 @@ export class SalePaymentDto {
   @IsOptional() @Trim() @IsString() @MaxLength(80) reference?: string;
 }
 
+// ----- ZIMRA fiscalisation (done on the till) ---------------------------------------
+
+export const FISCAL_STATUSES = ['pending', 'submitted', 'failed'] as const;
+export type FiscalState = (typeof FISCAL_STATUSES)[number];
+const MAX_INT = 2_147_483_647;
+
+export class FiscalErrorDto {
+  @IsString() @MaxLength(10) code: string;
+  /** Grey, Yellow or Red. */
+  @IsString() @MaxLength(10) color: string;
+  @IsString() @MaxLength(4000) description: string;
+}
+
+/** What ZIMRA said about a receipt the till sent. */
+export class FiscalResultDto {
+  /** pending: signed, not yet accepted by ZIMRA; submitted: accepted; failed: ZIMRA refused it or found serious errors. */
+  @IsIn(FISCAL_STATUSES) status: FiscalState;
+  /** ZIMRA's receipt ID. */
+  @IsOptional() @IsInt() @Min(1) receiptId?: number;
+  @IsOptional() @IsString() @MaxLength(40) serverDate?: string;
+  @IsOptional() @IsArray() @ArrayMaxSize(50) @ValidateNested({ each: true }) @Type(() => FiscalErrorDto)
+  errors?: FiscalErrorDto[];
+}
+
+/** A sale's ZIMRA receipt as the till signed it: printed with its QR code, sent to ZIMRA by the till. */
+export class FiscalReceiptDto extends FiscalResultDto {
+  /** ZIMRA device ID of the till. */
+  @IsInt() @Min(1) @Max(MAX_INT) deviceId: number;
+  @IsInt() @Min(1) @Max(MAX_INT) fiscalDayNo: number;
+  @IsInt() @Min(1) @Max(MAX_INT) globalNo: number;
+  @IsInt() @Min(1) @Max(MAX_INT) counter: number;
+  @IsString() @Length(1, 50) invoiceNo: string;
+  @IsIn(['FiscalInvoice', 'CreditNote', 'DebitNote']) receiptType: 'FiscalInvoice' | 'CreditNote' | 'DebitNote';
+  /** receiptDate as sent to ZIMRA: the till's local time without a time zone. */
+  @Matches(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}$/, { message: 'date must be like 2026-11-12T14:05:09' }) date: string;
+  @IsString() @MaxLength(200) qrCode: string;
+  @Matches(/^[0-9A-F]{4}(-[0-9A-F]{4}){3}$/, { message: 'verificationCode must be like 4C8B-E276-6333-0417' }) verificationCode: string;
+  @IsString() @MaxLength(100) hash: string;
+  @IsString() @MaxLength(400) signature: string;
+}
+
 export class CreateSaleDto {
   @IsUUID() storeId: string;
   @IsOptional() @IsUUID() customerId?: string;
@@ -76,6 +120,8 @@ export class CreateSaleDto {
   @IsOptional() @Trim() @IsString() @MaxLength(30) appVersion?: string;
   /** Idempotency key: sending the same clientId again returns the first sale. */
   @IsOptional() @IsUUID() clientId?: string;
+  /** The ZIMRA fiscal invoice the till issued for this sale. */
+  @IsOptional() @ValidateNested() @Type(() => FiscalReceiptDto) fiscal?: FiscalReceiptDto;
 }
 
 /** Same as a sale without payments: works out prices, discounts, VAT and totals without saving. */
@@ -113,6 +159,48 @@ export class CreateReturnDto {
   /** False for damaged goods that shouldn't go back on the shelf. */
   @IsOptional() @IsBoolean() restock?: boolean;
   @IsOptional() @IsUUID() shiftId?: string;
+  /** The till that gave the money back. */
+  @IsOptional() @IsUUID() deviceId?: string;
+  /** The ZIMRA credit note the till issued for this refund. */
+  @IsOptional() @ValidateNested() @Type(() => FiscalReceiptDto) fiscal?: FiscalReceiptDto;
+}
+
+/** ZIMRA's answer for one receipt, or (for a refund approved on a phone) the credit note itself. */
+export class FiscalUpdateDto extends FiscalResultDto {
+  /** The sale, by the till's idempotency key… */
+  @IsOptional() @IsUUID() clientId?: string;
+  /** …or by its id. */
+  @IsOptional() @IsUUID() saleId?: string;
+  /** The receipt, when the sale was recorded without one. Ignored if it already has one. */
+  @IsOptional() @ValidateNested() @Type(() => FiscalReceiptDto) receipt?: FiscalReceiptDto;
+}
+
+export class FiscalUpdatesDto {
+  @IsArray() @ArrayMinSize(1) @ArrayMaxSize(200) @ValidateNested({ each: true }) @Type(() => FiscalUpdateDto)
+  receipts: FiscalUpdateDto[];
+}
+
+/** A till's ZIMRA registration and status, reported by the till. */
+export class FiscalDeviceStateDto {
+  @IsIn(['test', 'live']) environment: 'test' | 'live';
+  @IsOptional() @IsString() @MaxLength(250) taxpayerName?: string | null;
+  @IsOptional() @IsString() @MaxLength(20) taxpayerTin?: string | null;
+  @IsOptional() @IsString() @MaxLength(20) vatNumber?: string | null;
+  @IsOptional() @IsString() @MaxLength(250) branchName?: string | null;
+  @IsOptional() @IsString() @MaxLength(40) dayStatus?: string | null;
+  @IsOptional() @IsInt() @Min(0) dayNo?: number | null;
+  @IsOptional() @IsISO8601() dayOpenedAt?: string | null;
+  @IsInt() @Min(0) unsent: number;
+  @IsOptional() @IsInt() @Min(0) lastGlobalNo?: number | null;
+  @IsOptional() @IsISO8601() certificateValidTill?: string | null;
+  @IsOptional() @IsString() @MaxLength(500) lastError?: string | null;
+}
+
+export class FiscalDeviceDto {
+  /** ZIMRA device ID; null when the till is no longer registered. */
+  @IsOptional() @IsInt() @Min(1) @Max(MAX_INT) fiscalDeviceId?: number | null;
+  @IsOptional() @IsString() @MaxLength(20) serialNo?: string | null;
+  @IsOptional() @ValidateNested() @Type(() => FiscalDeviceStateDto) state?: FiscalDeviceStateDto | null;
 }
 
 export const SALE_TYPES = ['sale', 'return', 'quotation'] as const;

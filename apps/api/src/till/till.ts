@@ -1,16 +1,19 @@
-import { Controller, Get, Injectable, Module, Query } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, HttpCode, Injectable, Module, Post, Put, Query } from '@nestjs/common';
 import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
-import { and, asc, desc, eq, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 import { type AuthContext, Ctx, FRONT_OF_HOUSE, Roles } from '../common/auth-context.js';
 import { divRound, fromCents, parseFixed, toBase, toCents } from '../accounting/money.js';
 import { found } from '../common/validation.js';
 import { DbService } from '../db/db.service.js';
+import { fiscalColumns, withResult } from '../sales/fiscal.js';
+import { FiscalDeviceDto, FiscalUpdatesDto } from '../sales/sales.dto.js';
 import {
   categories,
   currencies,
   customerGroups,
   customers,
+  devices,
   modifierGroups,
   modifiers,
   priceListItems,
@@ -19,6 +22,7 @@ import {
   productPackagings,
   products,
   productVariants,
+  sales,
   storePrices,
   stores,
   taxRates,
@@ -72,7 +76,7 @@ export class TillService {
         .orderBy(desc(currencies.isBase), asc(currencies.code));
       // Inactive rates too: a product can still point at one, and sales use it.
       const taxRows = await tx
-        .select({ id: taxRates.id, name: taxRates.name, code: taxRates.code, rate: taxRates.rate, inclusive: taxRates.inclusive })
+        .select({ id: taxRates.id, name: taxRates.name, code: taxRates.code, rate: taxRates.rate, inclusive: taxRates.inclusive, fiscalTaxId: taxRates.fiscalTaxId })
         .from(taxRates);
       const categoryRows = await tx
         .select({ id: categories.id, parentId: categories.parentId, name: categories.name, color: categories.color, sortOrder: categories.sortOrder })
@@ -90,6 +94,7 @@ export class TillService {
           soldByWeight: products.soldByWeight,
           kitchenStation: products.kitchenStation,
           imageUrl: products.imageUrl,
+          hsCode: products.hsCode,
           unit: units.abbreviation,
           allowsDecimal: units.allowsDecimal,
         })
@@ -232,6 +237,69 @@ export class TillService {
       };
     });
   }
+
+  /**
+   * A till reports its ZIMRA registration (device ID, serial number) and its
+   * fiscal day and queue, so the backoffice can show every till's ZIMRA status.
+   */
+  saveFiscalDevice(ctx: AuthContext, dto: FiscalDeviceDto) {
+    if (!ctx.deviceId) throw new BadRequestException('Only a till signed in with its own token can report this');
+    const deviceId = ctx.deviceId;
+    return this.dbs.withTenant(ctx, async (tx) => {
+      const fiscalDeviceId = dto.fiscalDeviceId ?? null;
+      if (fiscalDeviceId !== null) {
+        const [other] = await tx
+          .select({ code: devices.code, name: devices.name })
+          .from(devices)
+          .where(and(eq(devices.fiscalDeviceId, fiscalDeviceId), ne(devices.id, deviceId)))
+          .limit(1);
+        if (other) throw new ConflictException(`ZIMRA device ${fiscalDeviceId} is already set up on till ${other.code} (${other.name})`);
+      }
+      const [row] = await tx
+        .update(devices)
+        .set({
+          fiscalDeviceId,
+          fiscalSerialNo: fiscalDeviceId === null ? null : (dto.serialNo ?? null),
+          fiscalState: dto.state ? { ...dto.state, reportedAt: new Date().toISOString() } : null,
+        })
+        .where(eq(devices.id, deviceId))
+        .returning({ id: devices.id, fiscalDeviceId: devices.fiscalDeviceId, fiscalSerialNo: devices.fiscalSerialNo, fiscalState: devices.fiscalState });
+      found(row, 'Till');
+      return row;
+    });
+  }
+
+  /**
+   * ZIMRA's answers for receipts the till sent, matched to sales by the till's
+   * idempotency key (or sale id). A sale recorded without a receipt (a refund a
+   * manager approved on a phone) gets the credit note the till then issued.
+   * Answers for sales that haven't uploaded yet come back as `missing`, for the till to send again later.
+   */
+  saveFiscalResults(ctx: AuthContext, dto: FiscalUpdatesDto) {
+    return this.dbs.withTenant(ctx, async (tx) => {
+      const updated: string[] = [];
+      const missing: string[] = [];
+      for (const u of dto.receipts) {
+        const key = u.clientId ?? u.saleId;
+        if (!key) throw new BadRequestException('Each receipt needs a clientId or saleId');
+        const [sale] = await tx
+          .select({ id: sales.id, fiscal: sales.fiscal })
+          .from(sales)
+          .where(u.clientId ? eq(sales.clientId, u.clientId) : eq(sales.id, u.saleId!))
+          .limit(1);
+        if (!sale || (!sale.fiscal && !u.receipt)) {
+          missing.push(key);
+          continue;
+        }
+        const set = sale.fiscal
+          ? { fiscal: withResult(sale.fiscal, u), fiscalStatus: u.status }
+          : fiscalColumns({ ...u.receipt!, status: u.status, receiptId: u.receiptId, serverDate: u.serverDate, errors: u.errors });
+        await tx.update(sales).set(set).where(eq(sales.id, sale.id));
+        updated.push(key);
+      }
+      return { updated, missing };
+    });
+  }
 }
 
 @ApiTags('till')
@@ -245,6 +313,21 @@ export class TillController {
   @Get('catalog')
   catalog(@Ctx() ctx: AuthContext, @Query() q: TillCatalogQuery) {
     return this.svc.catalog(ctx, q.storeId);
+  }
+
+  /** The till's ZIMRA registration and fiscal day status (till sessions only). */
+  @Roles(...FRONT_OF_HOUSE)
+  @Put('fiscal-device')
+  fiscalDevice(@Ctx() ctx: AuthContext, @Body() dto: FiscalDeviceDto) {
+    return this.svc.saveFiscalDevice(ctx, dto);
+  }
+
+  /** What ZIMRA said about receipts the till sent. */
+  @Roles(...FRONT_OF_HOUSE)
+  @Post('fiscal-receipts')
+  @HttpCode(200)
+  fiscalReceipts(@Ctx() ctx: AuthContext, @Body() dto: FiscalUpdatesDto) {
+    return this.svc.saveFiscalResults(ctx, dto);
   }
 }
 

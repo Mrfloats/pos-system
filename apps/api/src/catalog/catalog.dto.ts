@@ -189,6 +189,8 @@ export class CreateProductDto {
   @IsOptional() @IsBoolean() soldByWeight?: boolean;
   @IsOptional() @Trim() @IsString() @MaxLength(40) kitchenStation?: string;
   @IsOptional() @IsUrl({ require_tld: false }) imageUrl?: string;
+  /** Harmonized System code for ZIMRA fiscal receipts: 4 or 8 digits (8 for zero-rated and exempt items). */
+  @IsOptional() @Trim() @Matches(/^(\d{4}|\d{8})$/, { message: 'hsCode must be 4 or 8 digits' }) hsCode?: string | null;
   @IsOptional() @IsBoolean() active?: boolean;
 
   /** At least one variant. The first becomes the default. */
