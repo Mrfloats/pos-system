@@ -739,15 +739,6 @@ class FiscalDevice extends ChangeNotifier {
     notifyListeners();
   }
 
-  /// Floatly now has the sale (it uploaded with this receipt's latest status).
-  Future<void> saleUploaded(String clientId) async {
-    final q = queue.where((q) => q.clientId == clientId).firstOrNull;
-    if (q == null) return;
-    q.reported = true;
-    queue.removeWhere((x) => x.reported && x.accepted);
-    await _save();
-  }
-
   /// The latest status of a sale's receipt, to send along when the sale uploads.
   QueuedReceipt? queuedFor(String clientId) => queue.where((q) => q.clientId == clientId).firstOrNull;
 

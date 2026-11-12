@@ -2,6 +2,7 @@ import '../models/receipt.dart';
 import '../models/sale.dart';
 import '../state/till_state.dart';
 import 'escpos.dart';
+import 'fiscal_print.dart';
 import 'printers.dart';
 import 'receipt_pdf.dart';
 
@@ -16,6 +17,12 @@ Future<void> printSaleReceipt(TillSettings s, Receipt r, {bool openDrawer = fals
     receiptEscPos(r, paperWidth: s.paperWidth, openDrawer: openDrawer && s.openDrawer),
     jobName: 'Receipt ${r.number ?? r.reference}',
   );
+}
+
+/// Prints a list of print items (a Z report…) the way this till is set up.
+Future<void> printItems(TillSettings s, List<PrintItem> items, {required String title}) async {
+  if (!s.direct) return printItemsPdf(items, paperWidth: s.paperWidth, title: title);
+  await sendToPrinter(s.printer, s.printerAddress, itemsEscPos(items, paperWidth: s.paperWidth), jobName: title);
 }
 
 /// Opens the cash drawer plugged into the receipt printer.

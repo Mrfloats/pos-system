@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../core/money.dart';
 import '../models/sale.dart';
+import '../printing/print_receipt.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
 
@@ -101,14 +102,40 @@ class _RefundScreenState extends State<RefundScreen> {
       final ret = await TillScope.read(context)
           .refund(widget.saleId, {'lines': lines, 'method': _method.name, 'reason': _reason.text.trim(), 'restock': _restock});
       if (!mounted) return;
-      final symbol = TillScope.read(context).catalog?.currency(ret['currencyCode'] as String).label ?? '';
+      final state = TillScope.read(context);
+      final symbol = state.catalog?.currency(ret['currencyCode'] as String).label ?? '';
+      // On a ZIMRA fiscal device the customer gets the credit note.
+      final creditNote = state.receiptFor(ret['id'] as String);
+      final problem = ret['fiscalProblem'] as String?;
       await showDialog<void>(
         context: context,
         builder: (context) => AlertDialog(
           icon: const Icon(Icons.check_circle_outline, color: Brand.ledger, size: 40),
           title: Text('Refund ${ret['number']}'),
-          content: Text('Give back ${formatMoney(toCents(ret['total']), symbol)} by ${_method.label.toLowerCase()}.', style: const TextStyle(fontSize: 16)),
-          actions: [FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Done'))],
+          content: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Give back ${formatMoney(toCents(ret['total']), symbol)} by ${_method.label.toLowerCase()}.', style: const TextStyle(fontSize: 16)),
+              if (creditNote != null) ...[const SizedBox(height: 8), const Text('Give the customer the ZIMRA credit note.')],
+              if (problem != null) ...[const SizedBox(height: 8), Text(problem, style: TextStyle(color: Theme.of(context).colorScheme.error))],
+            ],
+          ),
+          actions: [
+            if (creditNote != null)
+              TextButton.icon(
+                onPressed: () async {
+                  try {
+                    await printSaleReceipt(state.settings, creditNote);
+                  } catch (e) {
+                    if (context.mounted) showMessage(context, "Couldn't print: $e", error: true);
+                  }
+                },
+                icon: const Icon(Icons.print_outlined),
+                label: const Text('Print credit note'),
+              ),
+            FilledButton(onPressed: () => Navigator.pop(context), child: const Text('Done')),
+          ],
         ),
       );
       if (mounted) Navigator.of(context).pop();

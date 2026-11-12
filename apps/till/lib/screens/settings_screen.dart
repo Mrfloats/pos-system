@@ -1,9 +1,24 @@
 import 'package:flutter/material.dart';
 
 import '../core/api.dart';
+import '../fiscal/fdms_client.dart';
 import '../state/till_state.dart';
 import '../widgets/common.dart';
+import 'fiscal_screen.dart';
 import 'printer_screen.dart';
+
+/// "Device 321 · day 7 open · 2 to send", or why the till doesn't fiscalise.
+String _fiscalSummary(TillState state) {
+  final f = state.fiscal;
+  if (!f.supported) return 'Not on this device (needs the Android or Windows app)';
+  if (!f.registered) return 'Not registered: sales aren’t fiscalised';
+  final d = f.day;
+  return [
+    'Device ${f.deviceId}${f.environment == FdmsEnvironment.test ? ' (test)' : ''}',
+    d == null ? 'no day open' : 'day ${d.no} open',
+    if (f.unsent > 0) '${f.unsent} to send',
+  ].join(' · ');
+}
 
 /// What this till is linked to, receipt printing, and (managers) unpairing.
 class SettingsScreen extends StatelessWidget {
@@ -83,6 +98,15 @@ class SettingsScreen extends StatelessWidget {
                   state.settings.autoPrint = v;
                   state.saveSettings();
                 },
+              ),
+            ]),
+            section('ZIMRA', [
+              ListTile(
+                leading: const Icon(Icons.verified_outlined),
+                title: const Text('Fiscal device'),
+                subtitle: Text(_fiscalSummary(state)),
+                trailing: const Icon(Icons.chevron_right),
+                onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FiscalScreen())),
               ),
             ]),
             section('Products and sales', [

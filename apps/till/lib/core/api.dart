@@ -51,6 +51,8 @@ class Api {
 
   Future<dynamic> patch(String path, Object body) => _send('PATCH', path, body: body, timeout: const Duration(seconds: 20));
 
+  Future<dynamic> put(String path, Object body) => _send('PUT', path, body: body, timeout: const Duration(seconds: 20));
+
   Future<dynamic> _send(String method, String path, {Map<String, String>? query, Object? body, required Duration timeout}) async {
     var uri = Uri.parse('$base$path');
     if (query != null) uri = uri.replace(queryParameters: query);

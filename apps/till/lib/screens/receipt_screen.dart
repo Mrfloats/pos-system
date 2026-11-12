@@ -3,10 +3,12 @@ import 'package:flutter/material.dart';
 import '../core/api.dart';
 import '../core/money.dart';
 import '../models/receipt.dart';
+import '../printing/fiscal_print.dart';
 import '../printing/print_receipt.dart';
 import '../printing/receipt_pdf.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/qr_view.dart';
 import 'refund_screen.dart';
 
 /// A sale's receipt: shown after a sale and from the sales list, to print, share or refund.
@@ -184,7 +186,8 @@ class _ReceiptScreenState extends State<ReceiptScreen> {
                 ),
                 if (!canManage && r.uploaded && !widget.justSold) ...[
                   if (request != null) _RequestStatus(request: request),
-                  if (request?['status'] != 'pending')
+                  // ZIMRA has no void: a fiscalised sale can only be refunded.
+                  if (request?['status'] != 'pending' && r.fiscal == null)
                     Align(
                       alignment: Alignment.centerLeft,
                       child: TextButton.icon(
@@ -323,6 +326,20 @@ class ReceiptView extends StatelessWidget {
     );
     final d = r.soldAt;
     String two(int n) => n.toString().padLeft(2, '0');
+    final f = r.fiscal;
+    const strong = TextStyle(fontWeight: FontWeight.w700, color: Colors.black87);
+    List<Widget> items(List<PrintItem> list) => [
+      for (final i in list)
+        switch (i) {
+          PText() => Text(i.text, textAlign: i.center ? TextAlign.center : TextAlign.left, style: i.bold ? strong : muted),
+          PRow() => row(i.left, i.right, style: i.bold ? strong : muted),
+          PRule() => const _Dashes(),
+          PQr() => Padding(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            child: Center(child: QrView(i.data, size: 136)),
+          ),
+        },
+    ];
 
     return Container(
       padding: const EdgeInsets.fromLTRB(20, 22, 20, 22),
@@ -341,14 +358,18 @@ class ReceiptView extends StatelessWidget {
               textAlign: TextAlign.center,
               style: const TextStyle(fontWeight: FontWeight.w700, fontSize: 17, color: Colors.black),
             ),
-            Text(r.storeName, textAlign: TextAlign.center, style: muted),
-            for (final line in [
-              r.address,
-              if (r.phone != null) 'Tel ${r.phone}',
-              if (r.tin != null) 'TIN ${r.tin}',
-              if (r.vatNumber != null) 'VAT No ${r.vatNumber}',
-            ])
-              if (line != null) Text(line, textAlign: TextAlign.center, style: muted),
+            if (f != null)
+              ...items(fiscalTop(f))
+            else ...[
+              Text(r.storeName, textAlign: TextAlign.center, style: muted),
+              for (final line in [
+                r.address,
+                if (r.phone != null) 'Tel ${r.phone}',
+                if (r.tin != null) 'TIN ${r.tin}',
+                if (r.vatNumber != null) 'VAT No ${r.vatNumber}',
+              ])
+                if (line != null) Text(line, textAlign: TextAlign.center, style: muted),
+            ],
             const _Dashes(),
             row(
               r.heading,
@@ -358,7 +379,7 @@ class ReceiptView extends StatelessWidget {
             if (r.showTillRef) row('Till ref', r.reference, style: muted),
             row('Cashier', r.cashier, style: muted),
             if (r.customerName != null) row('Customer', r.customerName!, style: muted),
-            if (r.customerTin != null) row('Customer TIN', r.customerTin!, style: muted),
+            if (r.customerTin != null && f?.buyerTin == null) row('Customer TIN', r.customerTin!, style: muted),
             if (r.priceListName != null) row('Prices', r.priceListName!, style: muted),
             const _Dashes(),
             for (final l in r.lines)
@@ -381,7 +402,7 @@ class ReceiptView extends StatelessWidget {
               m(r.total),
               style: const TextStyle(fontWeight: FontWeight.w800, fontSize: 18, color: Colors.black),
             ),
-            if (r.taxTotal > 0) row(r.taxIncluded ? 'VAT included' : 'VAT', m(r.taxTotal), style: muted),
+            if (r.taxTotal > 0 && (f == null || f.taxes.isEmpty)) row(r.taxIncluded ? 'VAT included' : 'VAT', m(r.taxTotal), style: muted),
             const _Dashes(),
             for (final p in r.payments) ...[
               row(p.method.label, formatMoney(p.amount, p.symbol)),
@@ -392,6 +413,7 @@ class ReceiptView extends StatelessWidget {
                   style: const TextStyle(fontWeight: FontWeight.w600, color: Colors.black87),
                 ),
             ],
+            if (f != null) ...[const _Dashes(), ...items(fiscalBottom(f, itemCount: r.itemCount, money: m))],
             const SizedBox(height: 12),
             Text(
               'Thank you!',

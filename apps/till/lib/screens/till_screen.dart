@@ -8,6 +8,7 @@ import '../theme.dart';
 import '../widgets/cart_panel.dart';
 import '../widgets/common.dart';
 import '../widgets/product_panel.dart';
+import 'fiscal_screen.dart';
 import 'history_screen.dart';
 import 'settings_screen.dart';
 import 'shift_screens.dart';
@@ -139,6 +140,15 @@ class _TillScreenState extends State<TillScreen> {
             ),
             const SizedBox(width: 8),
           ],
+          if (state.fiscal.active && state.fiscal.unsent > 0) ...[
+            StatusPill(
+              icon: Icons.verified_outlined,
+              label: '${state.fiscal.unsent} to ZIMRA',
+              color: Brand.amber,
+              onTap: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FiscalScreen())),
+            ),
+            const SizedBox(width: 8),
+          ],
           if (wide)
             StatusPill(
               icon: Icons.schedule,
@@ -164,6 +174,8 @@ class _TillScreenState extends State<TillScreen> {
                   _openDrawer();
                 case 'settings':
                   Navigator.of(context).push(MaterialPageRoute(builder: (_) => const SettingsScreen()));
+                case 'zimra':
+                  Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FiscalScreen()));
                 case 'lock':
                   _lock();
               }
@@ -183,6 +195,11 @@ class _TillScreenState extends State<TillScreen> {
                 const PopupMenuItem(
                   value: 'drawer',
                   child: ListTile(leading: Icon(Icons.lock_open_outlined), title: Text('Open cash drawer')),
+                ),
+              if (session.canManage && state.fiscal.active)
+                const PopupMenuItem(
+                  value: 'zimra',
+                  child: ListTile(leading: Icon(Icons.event_available_outlined), title: Text('End of day (Z report)')),
                 ),
               const PopupMenuItem(
                 value: 'refresh',
@@ -207,6 +224,14 @@ class _TillScreenState extends State<TillScreen> {
             _Banner(text: state.requestNotice!, color: Brand.ledgerSoft, ink: Brand.ledgerDeep, action: 'OK', onAction: state.dismissRequestNotice),
           if (state.online && session.token == null && waiting > 0)
             _Banner(text: "Sales can't upload until you sign in again.", color: Brand.amberSoft, ink: Brand.amberInk, action: 'Sign in', onAction: _lock),
+          if (state.fiscal.active && state.fiscal.dayWarning != null)
+            _Banner(
+              text: state.fiscal.dayWarning!,
+              color: Brand.amberSoft,
+              ink: Brand.amberInk,
+              action: session.canManage ? 'Close day' : null,
+              onAction: () => Navigator.of(context).push(MaterialPageRoute(builder: (_) => const FiscalScreen())),
+            ),
           Expanded(
             child: wide
                 ? Row(

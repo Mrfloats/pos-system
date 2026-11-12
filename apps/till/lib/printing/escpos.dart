@@ -2,6 +2,7 @@ import 'dart:typed_data';
 
 import '../core/money.dart';
 import '../models/receipt.dart';
+import 'fiscal_print.dart';
 
 /// Characters per line in the printer's normal font.
 int lineWidth(int paperWidth) => paperWidth == 58 ? 32 : 48;
@@ -71,6 +72,43 @@ class EscPos {
 
   /// Opens the cash drawer plugged into the printer.
   void openDrawer() => _out.add(const [0x1B, 0x70, 0x00, 0x19, 0xFA]);
+
+  /// A QR code (GS ( k, model 2, error correction M), centred.
+  void qr(String data) {
+    final bytes = ascii(data).codeUnits;
+    final store = bytes.length + 3;
+    align(Align.center);
+    _out
+      ..add(const [0x1D, 0x28, 0x6B, 0x04, 0x00, 0x31, 0x41, 0x32, 0x00])
+      ..add([0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x43, width >= 48 ? 6 : 4])
+      ..add(const [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x45, 0x31])
+      ..add([0x1D, 0x28, 0x6B, store & 0xFF, store >> 8, 0x31, 0x50, 0x30, ...bytes])
+      ..add(const [0x1D, 0x28, 0x6B, 0x03, 0x00, 0x31, 0x51, 0x30])
+      ..addByte(0x0A);
+    align(Align.left);
+  }
+
+  /// Draws the shared fiscal print items.
+  void items(List<PrintItem> items) {
+    for (final i in items) {
+      switch (i) {
+        case PText():
+          align(i.center ? Align.center : Align.left);
+          bold(i.bold);
+          text(i.text);
+          bold(false);
+          align(Align.left);
+        case PRow():
+          bold(i.bold);
+          row(i.left, i.right);
+          bold(false);
+        case PRule():
+          rule();
+        case PQr():
+          qr(i.data);
+      }
+    }
+  }
 
   Uint8List get bytes => _out.toBytes();
 }
@@ -159,9 +197,14 @@ Uint8List receiptEscPos(Receipt r, {required int paperWidth, bool openDrawer = f
   p.text(r.businessName);
   p.big(false);
   p.bold(false);
-  p.text(r.storeName);
-  for (final line in [r.address, if (r.phone != null) 'Tel ${r.phone}', if (r.tin != null) 'TIN ${r.tin}', if (r.vatNumber != null) 'VAT No ${r.vatNumber}']) {
-    if (line != null) p.text(line);
+  final f = r.fiscal;
+  if (f != null) {
+    p.items(fiscalTop(f));
+  } else {
+    p.text(r.storeName);
+    for (final line in [r.address, if (r.phone != null) 'Tel ${r.phone}', if (r.tin != null) 'TIN ${r.tin}', if (r.vatNumber != null) 'VAT No ${r.vatNumber}']) {
+      if (line != null) p.text(line);
+    }
   }
   p.align(Align.left);
   p.rule();
@@ -172,9 +215,10 @@ Uint8List receiptEscPos(Receipt r, {required int paperWidth, bool openDrawer = f
   if (r.showTillRef) p.row('Till ref', r.reference);
   p.row('Cashier', r.cashier);
   if (r.customerName != null) p.row('Customer', r.customerName!);
-  if (r.customerTin != null) p.row('Customer TIN', r.customerTin!);
+  // A fiscal receipt's BUYER block already has them.
+  if (r.customerTin != null && f?.buyerTin == null) p.row('Customer TIN', r.customerTin!);
   if (r.priceListName != null) p.row('Prices', r.priceListName!);
-  if (r.customerVat != null) p.row('Customer VAT No', r.customerVat!);
+  if (r.customerVat != null && f?.buyerVat == null) p.row('Customer VAT No', r.customerVat!);
   p.rule();
   for (final l in r.lines) {
     p.row(l.name, m(l.total));
@@ -192,7 +236,7 @@ Uint8List receiptEscPos(Receipt r, {required int paperWidth, bool openDrawer = f
   p.row('TOTAL', m(r.total));
   p.big(false);
   p.bold(false);
-  if (r.taxTotal > 0) p.row(r.taxIncluded ? 'VAT included' : 'VAT', m(r.taxTotal));
+  if (r.taxTotal > 0 && (f == null || f.taxes.isEmpty)) p.row(r.taxIncluded ? 'VAT included' : 'VAT', m(r.taxTotal));
   p.rule();
   for (final pay in r.payments) {
     p.row(pay.method.label, formatMoney(pay.amount, pay.symbol));
@@ -203,11 +247,19 @@ Uint8List receiptEscPos(Receipt r, {required int paperWidth, bool openDrawer = f
     }
   }
   p.rule();
+  if (f != null) p.items(fiscalBottom(f, itemCount: r.itemCount, money: m));
   p.align(Align.center);
   if (r.number == null) p.text('Recorded offline. It uploads to Floatly automatically.');
   p.bold(true);
   p.text('Thank you!');
   p.bold(false);
+  p.cut();
+  return p.bytes;
+}
+
+/// Any list of print items (a Z report…) as ESC/POS.
+Uint8List itemsEscPos(List<PrintItem> items, {required int paperWidth}) {
+  final p = EscPos(width: lineWidth(paperWidth))..items(items);
   p.cut();
   return p.bytes;
 }

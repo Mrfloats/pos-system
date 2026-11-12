@@ -220,12 +220,16 @@ class Product {
       soldByWeight = j['soldByWeight'] as bool? ?? false,
       kitchenStation = _str(j['kitchenStation']),
       unit = _str(j['unit']),
+      hsCode = _str(j['hsCode']),
       allowsDecimal = j['allowsDecimal'] as bool? ?? false,
       variants = [for (final v in j['variants'] as List) Variant.fromJson((v as Map).cast())],
       choiceGroups = [for (final g in j['modifierGroups'] as List? ?? const []) ChoiceGroup.fromJson((g as Map).cast())];
 
   final String id, name, kind;
   final String? categoryId, taxRateId, kitchenStation, unit;
+
+  /// Harmonized System code, for ZIMRA fiscal receipts.
+  final String? hsCode;
   final bool soldByWeight, allowsDecimal;
   final List<Variant> variants;
 
@@ -339,6 +343,9 @@ class Catalog {
   bool get hasPriceChoice => priceLists.any((l) => !l.isDefault);
 
   Currency currency(String code) => currencies.firstWhere((c) => c.code == code, orElse: () => baseCurrency);
+
+  /// The product a variant belongs to, if it's still on sale here.
+  Product? productOfVariant(String variantId) => products.where((p) => p.variants.any((v) => v.id == variantId)).firstOrNull;
 
   /// Finds what a barcode scanner read, or a SKU typed in.
   Sellable? lookup(String code) {

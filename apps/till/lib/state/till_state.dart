@@ -9,6 +9,9 @@ import 'package:uuid/uuid.dart';
 import '../core/api.dart';
 import '../core/local_store.dart';
 import '../core/money.dart';
+import '../fiscal/fdms.dart';
+import '../fiscal/fdms_client.dart';
+import '../fiscal/fiscal_device.dart';
 import '../models/catalog.dart';
 import '../models/receipt.dart';
 import '../models/sale.dart';
@@ -157,9 +160,14 @@ class _KnownPin {
 
 /// Everything the till knows and does. Screens listen to it and call its methods.
 class TillState extends ChangeNotifier {
-  TillState(this.store);
+  TillState(this.store, {FdmsTransport? fiscalTransport}) : fiscal = FiscalDevice(store: store, transport: fiscalTransport) {
+    fiscal.addListener(notifyListeners);
+  }
 
   final LocalStore store;
+
+  /// This till as a ZIMRA fiscal device. Once registered, every sale and refund is fiscalised.
+  final FiscalDevice fiscal;
 
   bool ready = false;
   DeviceConfig? device;
@@ -221,6 +229,7 @@ class TillState extends ChangeNotifier {
     if (s is Map) settings = TillSettings.fromJson(s.cast());
     final sh = await store.readJson('shifts');
     if (sh is Map) _shifts = sh.cast();
+    await fiscal.load();
     ready = true;
     notifyListeners();
     _timer = Timer.periodic(const Duration(seconds: 30), (_) => _tick());
@@ -242,6 +251,8 @@ class TillState extends ChangeNotifier {
   @override
   void dispose() {
     _timer?.cancel();
+    fiscal.removeListener(notifyListeners);
+    fiscal.dispose();
     super.dispose();
   }
 
@@ -663,6 +674,32 @@ class TillState extends ChangeNotifier {
           },
       ],
     };
+    // A ZIMRA fiscal device signs the sale before anything is saved: if ZIMRA's
+    // rules stop it (a missing HS code, the day's time limit), nothing is recorded.
+    IssuedReceipt? issued;
+    if (fiscal.active) {
+      issued = await fiscal.issue(
+        clientId: clientId,
+        type: FdmsReceiptType.fiscalInvoice,
+        currency: cart.currency.code,
+        items: [
+          for (final l in cart.lines)
+            FiscalItem(
+              name: l.line.name,
+              quantity: l.line.quantity,
+              unitPrice: l.unitPrice,
+              total: l.total,
+              tax: fiscal.taxFor(l.taxRate),
+              hsCode: l.line.product.hsCode,
+              priceIncludesTax: l.taxRate?.inclusive ?? true,
+            ),
+        ],
+        payments: _fiscalPayments(payments, settlement, cart),
+        buyer: FdmsBuyer.from(name: customer?.name, tin: customer?.tin, vatNumber: customer?.vatNumber),
+        username: s.fullName,
+      );
+      payload['fiscal'] = issued.forFloatly();
+    }
     final receipt = Receipt.forSale(
       clientId: clientId,
       reference: reference,
@@ -676,6 +713,7 @@ class TillState extends ChangeNotifier {
       customerName: customerName,
       priceListName: priceListId == null || priceList?.isDefault == true ? null : priceList?.name,
     );
+    if (issued != null) receipt.fiscal = _printable(issued);
     outbox.add(PendingSale(clientId: clientId, payload: payload));
     receipts.insert(0, receipt);
     if (receipts.length > 300) receipts.removeRange(300, receipts.length);
@@ -683,10 +721,226 @@ class TillState extends ChangeNotifier {
     await _saveReceipts();
     clearCart();
 
+    if (issued != null) unawaited(fiscalSync());
     // Give it a few seconds to upload, so the receipt can carry Floatly's sale number.
     await sync().timeout(const Duration(seconds: 8), onTimeout: () {});
     return receipt;
   }
+
+  // ----- ZIMRA --------------------------------------------------------------------------
+
+  static MoneyType _moneyType(PayMethod m) => switch (m) {
+    PayMethod.cash => MoneyType.cash,
+    PayMethod.card => MoneyType.card,
+    PayMethod.mobile => MoneyType.mobileWallet,
+    PayMethod.bank => MoneyType.bankTransfer,
+  };
+
+  /// What each payment kept (change given back), in the sale's currency, as ZIMRA payment kinds.
+  List<FiscalPay> _fiscalPayments(List<Payment> payments, Settlement settlement, PricedCart cart) {
+    final changeFrom = payments.lastIndexWhere((p) => p.method == PayMethod.cash);
+    return [
+      for (final (i, p) in payments.indexed)
+        FiscalPay(_moneyType(p.method), _inSaleCurrency(p.amount - (i == changeFrom ? settlement.change : 0), p.currency, cart)),
+    ];
+  }
+
+  int _inSaleCurrency(int cents, Currency c, PricedCart cart) {
+    if (c.code == cart.currency.code) return cents;
+    final base = c.isBase ? cents : toBase(cents, paymentRate(c, cart));
+    return cart.currency.isBase ? base : fromBase(base, cart.rate);
+  }
+
+  /// "15.5", "15", "0": a tax percent for the receipt's tax table.
+  static String _percent(int hundredths) {
+    final s = formatFixed(hundredths, 2).replaceFirst(RegExp(r'0+$'), '');
+    return s.endsWith('.') ? s.substring(0, s.length - 1) : s;
+  }
+
+  /// The ZIMRA part of the printed receipt.
+  ReceiptFiscal _printable(IssuedReceipt i, {Map<String, dynamic>? credited}) {
+    final c = fiscal.config!;
+    final r = i.receipt;
+    return ReceiptFiscal(
+      type: r.type.wire,
+      vatPayer: c.vatPayer,
+      taxpayerName: c.taxpayerName,
+      taxpayerTin: c.taxpayerTin,
+      vatNumber: c.vatNumber,
+      branchName: c.branchName,
+      branchAddress: c.branchAddress,
+      branchEmail: c.branchEmail,
+      branchPhone: c.branchPhone,
+      deviceId: i.deviceId,
+      serialNo: fiscal.serialNo,
+      dayNo: i.dayNo,
+      counter: r.counter,
+      globalNo: r.globalNo,
+      invoiceNo: r.invoiceNo,
+      date: r.date,
+      qrCode: i.qrCode,
+      verificationCode: i.verificationCode,
+      verifyUrl: c.qrUrl,
+      taxes: [
+        for (final t in r.taxes) FiscalTaxRow(label: t.tax.exempt ? 'Exempt' : '${_percent(t.tax.percent!)}%', gross: t.salesAmountWithTax.abs(), tax: t.taxAmount.abs()),
+      ],
+      buyerName: r.buyer?.name,
+      buyerTin: r.buyer?.tin,
+      buyerVat: r.buyer?.vatNumber,
+      creditedGlobalNo: credited?['globalNo'] as int?,
+      creditedInvoiceNo: credited?['invoiceNo'] as String?,
+      creditedDate: credited?['date'] == null ? null : DateTime.parse(credited!['date'] as String),
+      notes: r.notes,
+    );
+  }
+
+  Future<void>? _fiscalSyncing;
+  String? _lastFiscalStatus;
+  DateTime? _lastFiscalPing, _lastFiscalRefresh;
+
+  /// Sends waiting receipts to ZIMRA, then tells Floatly what ZIMRA said and how this till stands.
+  Future<void> fiscalSync() => _fiscalSyncing ??= _runFiscalSync().whenComplete(() => _fiscalSyncing = null);
+
+  Future<void> _runFiscalSync() async {
+    if (!fiscal.active) return;
+    await fiscal.send();
+    if (session?.token == null) return;
+    try {
+      final items = fiscal.unreported.take(200).toList();
+      if (items.isNotEmpty) {
+        final res = await _call((api) => api.post('/till/fiscal-receipts', {'receipts': fiscal.reportBody(items)})) as Map;
+        await fiscal.markReported([for (final k in res['updated'] as List) k as String]);
+      }
+      await _reportFiscalDevice();
+    } on ApiException {
+      // Tried again on the next tick.
+    }
+  }
+
+  /// Tells Floatly this till's ZIMRA status when it has changed.
+  Future<void> _reportFiscalDevice({bool force = false}) async {
+    final body = fiscal.statusForFloatly();
+    final key = jsonEncode(body);
+    if (!force && key == _lastFiscalStatus) return;
+    await _call((api) => api.put('/till/fiscal-device', body));
+    _lastFiscalStatus = key;
+  }
+
+  /// Registers this till with ZIMRA. Floatly is asked first, so one ZIMRA device can't be two tills.
+  Future<void> registerFiscal({
+    required FdmsEnvironment environment,
+    required int deviceId,
+    required String activationKey,
+    required String serialNo,
+    String modelName = FiscalDevice.defaultModelName,
+    String modelVersion = FiscalDevice.defaultModelVersion,
+  }) async {
+    final before = fiscal.registered ? fiscal.statusForFloatly() : {'fiscalDeviceId': null};
+    await _call((api) => api.put('/till/fiscal-device', {'fiscalDeviceId': deviceId, 'serialNo': serialNo.trim(), 'state': {'environment': environment.name, 'unsent': 0}}));
+    try {
+      await fiscal.register(environment: environment, deviceId: deviceId, activationKey: activationKey, serialNo: serialNo, modelName: modelName, modelVersion: modelVersion);
+    } catch (_) {
+      // Give the ZIMRA device ID back (or keep the old registration's).
+      try {
+        await _call((api) => api.put('/till/fiscal-device', before));
+      } on ApiException {
+        // Corrected the next time this till reports.
+      }
+      rethrow;
+    }
+    await _reportFiscalDevice(force: true);
+  }
+
+  /// Forgets this till's ZIMRA registration (only with nothing left to send and the day closed).
+  Future<void> forgetFiscal() async {
+    await fiscal.forget();
+    await _reportFiscalDevice(force: true);
+  }
+
+  /// Closes the ZIMRA fiscal day and tells Floatly.
+  Future<void> closeFiscalDay() async {
+    try {
+      await fiscal.closeDay();
+    } finally {
+      try {
+        await _reportFiscalDevice();
+      } on ApiException {
+        // Reported on the next tick.
+      }
+    }
+  }
+
+  /// The sale as it uploads, with its receipt's latest ZIMRA status.
+  Map<String, dynamic> _withFiscalStatus(PendingSale p) {
+    final f = p.payload['fiscal'];
+    final q = fiscal.queuedFor(p.clientId);
+    if (f is! Map || q == null) return p.payload;
+    final latest = fiscal.reportBody([q]).single;
+    return {
+      ...p.payload,
+      'fiscal': {...f, 'status': latest['status'], 'receiptId': ?latest['receiptId'], 'serverDate': ?latest['serverDate'], 'errors': ?latest['errors']},
+    };
+  }
+
+  /// Issues the ZIMRA credit note for a refund Floatly has recorded (here, or
+  /// approved on a phone), keeps it with the till's receipts to print, and
+  /// sends it. Only for sales that were fiscalised: ZIMRA can only credit
+  /// receipts it has. Returns why it couldn't, if it couldn't.
+  Future<String?> _creditNote(Map<String, dynamic> ret, {Map<String, dynamic>? original}) async {
+    if (!fiscal.active || ret['fiscal'] != null) return null;
+    if (fiscal.queue.any((q) => q.saleId == ret['id'])) return null;
+    try {
+      final orig = original ?? await loadSale(ret['originalSaleId'] as String);
+      final of = orig['fiscal'];
+      if (of is! Map) return null;
+      final c = catalog!;
+      TaxRate? rate(Map l) => c.taxRates[l['taxRateId']];
+      final issued = await fiscal.issue(
+        clientId: ret['id'] as String,
+        saleId: ret['id'] as String,
+        attach: true,
+        type: FdmsReceiptType.creditNote,
+        currency: ret['currencyCode'] as String,
+        items: [
+          for (final l in (ret['lines'] as List).cast<Map>())
+            FiscalItem(
+              name: '${l['productName']}${l['variantName'] != null && l['variantName'] != 'Default' ? ' · ${l['variantName']}' : ''}',
+              quantity: parseFixed(l['quantity'], 3),
+              unitPrice: toCents(l['unitPrice']),
+              total: toCents(l['total']).abs(),
+              tax: fiscal.taxFor(rate(l)),
+              hsCode: c.productOfVariant(l['variantId'] as String)?.hsCode,
+              priceIncludesTax: rate(l)?.inclusive ?? true,
+            ),
+        ],
+        payments: [for (final p in (ret['payments'] as List).cast<Map>()) FiscalPay(_moneyType(PayMethod.parse(p['method'] as String?)), toCents(p['amount']).abs())],
+        notes: (ret['note'] as String?)?.trim().isNotEmpty == true ? ret['note'] as String : 'Refund',
+        noteRef: FdmsNoteRef(deviceId: of['deviceId'] as int, globalNo: of['globalNo'] as int, fiscalDayNo: of['fiscalDayNo'] as int),
+        username: session?.fullName,
+      );
+      final receipt = Receipt.fromApiSale(
+        ret,
+        businessName: c.business.name,
+        address: c.store.address ?? c.business.address,
+        phone: c.store.phone ?? c.business.phone,
+        tin: c.business.tin,
+        vatNumber: c.business.vatNumber,
+        symbolOf: (code) => c.currency(code).label,
+      )..fiscal = _printable(issued, credited: of.cast<String, dynamic>());
+      receipts.insert(0, receipt);
+      await _saveReceipts();
+      notifyListeners();
+      unawaited(fiscalSync());
+      return null;
+    } on FiscalBlocked catch (e) {
+      return 'The refund is recorded, but the ZIMRA credit note couldn’t be issued: ${e.message}';
+    } on ApiException catch (e) {
+      return 'The refund is recorded, but the ZIMRA credit note couldn’t be issued: ${e.message}';
+    }
+  }
+
+  /// The till's own copy of a sale's or refund's receipt, if it has one.
+  Receipt? receiptFor(String saleId) => receipts.where((r) => r.saleId == saleId).firstOrNull;
 
   Future<void> _saveOutbox() => store.writeJson('outbox', [for (final p in outbox) p.toJson()]);
   Future<void> _saveReceipts() => store.writeJson('receipts', [for (final r in receipts) r.toJson()]);
@@ -708,7 +962,7 @@ class TillState extends ChangeNotifier {
       if (next == null) break;
       tried.add(next.clientId);
       try {
-        final sale = await _call((api) => api.post('/sales', next.payload, const Duration(seconds: 45))) as Map;
+        final sale = await _call((api) => api.post('/sales', _withFiscalStatus(next), const Duration(seconds: 45))) as Map;
         await _uploaded(next, sale);
       } on ApiException catch (e) {
         // A shift closed in the backoffice before this sale arrived: record it without the shift.
@@ -798,6 +1052,14 @@ class TillState extends ChangeNotifier {
     }
     myRequests = next;
     notifyListeners();
+    // Approved refunds from the last few days get their ZIMRA credit note on this till.
+    if (fiscal.active) {
+      final since = DateTime.now().subtract(const Duration(days: 3));
+      for (final r in next) {
+        final decided = DateTime.tryParse(r['decidedAt'] as String? ?? '');
+        if (r['kind'] == 'refund' && r['status'] == 'approved' && r['resultSaleId'] != null && decided != null && decided.isAfter(since)) await _creditApproved(r);
+      }
+    }
   }
 
   void dismissRequestNotice() {
@@ -819,8 +1081,35 @@ class TillState extends ChangeNotifier {
     return '$who turned down the $what${note == null ? '.' : ': $note'}';
   }
 
-  Future<Map<String, dynamic>> refund(String saleId, Map<String, dynamic> body) async =>
-      ((await _call((api) => api.post('/sales/$saleId/returns', {...body, 'shiftId': ?shift?.id}))) as Map).cast();
+  /// A manager's refund. On a ZIMRA fiscal device it also issues the credit note
+  /// (kept with the receipts, to print); `fiscalProblem` says if it couldn't.
+  Future<Map<String, dynamic>> refund(String saleId, Map<String, dynamic> body) async {
+    final ret = ((await _call((api) => api.post('/sales/$saleId/returns', {...body, 'shiftId': ?shift?.id, 'deviceId': ?device?.deviceId}))) as Map).cast<String, dynamic>();
+    final problem = await _creditNote(ret);
+    return {...ret, 'fiscalProblem': ?problem};
+  }
+
+  /// Refunds a manager approved on a phone that this till has issued credit notes for.
+  Set<String> _credited = {};
+
+  /// A refund a manager approved for this cashier: issue its ZIMRA credit note here.
+  Future<void> _creditApproved(Map<String, dynamic> r) async {
+    final id = r['resultSaleId'] as String;
+    if (_credited.isEmpty) _credited = {for (final x in (await store.readJson('credited') as List?) ?? const []) x as String};
+    if (_credited.contains(id)) return;
+    try {
+      final problem = await _creditNote(await loadSale(id));
+      if (problem != null) {
+        requestNotice = problem;
+        notifyListeners();
+        return;
+      }
+      _credited.add(id);
+      await store.writeJson('credited', _credited.toList().reversed.take(200).toList());
+    } on ApiException {
+      // Tried again the next time requests are checked.
+    }
+  }
 
   // ----- Settings -----------------------------------------------------------------------
 
@@ -844,5 +1133,24 @@ class TillState extends ChangeNotifier {
     } on ApiException {
       // Shown through [online]; tried again on the next tick.
     }
+    if (fiscal.active) await _fiscalTick();
+  }
+
+  /// ZIMRA housekeeping: tell it the till is on, keep its settings and certificate fresh, send receipts.
+  Future<void> _fiscalTick() async {
+    final now = DateTime.now();
+    if (_lastFiscalPing == null || now.difference(_lastFiscalPing!) >= const Duration(minutes: 5)) {
+      _lastFiscalPing = now;
+      await fiscal.ping();
+    }
+    if (_lastFiscalRefresh == null || now.difference(_lastFiscalRefresh!) >= const Duration(hours: 12)) {
+      _lastFiscalRefresh = now;
+      try {
+        await fiscal.refresh();
+      } on FdmsException {
+        // Shown on the ZIMRA screen; tried again later.
+      }
+    }
+    await fiscalSync();
   }
 }
