@@ -120,6 +120,8 @@ FLOATLY_SHOTS=1 flutter test test/screenshots_test.dart --update-goldens
 
 The pictures land in `build/shots`.
 
+ZIMRA fiscalisation has three test files. `test/fdms_test.dart` checks the receipt and day signing text against ZIMRA's published examples, plus the QR code and the device key. `test/fiscal_device_test.dart` runs registration, offline selling, refusals, the day limit and closing the day against `test/fake_fdms.dart`, an in-memory ZIMRA that verifies every signature, the hash chain, numbering and totals. `test/fiscal_till_test.dart` runs checkout, refunds and printing through the whole till. `FLOATLY_SHOTS=1 flutter test test/fiscal_till_test.dart --update-goldens` draws a fiscal receipt and the ZIMRA screen.
+
 ## Project layout
 
 ```
@@ -136,12 +138,18 @@ lib/
     catalog.dart          products, prices, tax rates, currencies, customers
     sale.dart             basket pricing and payments, the same rules as the API
     receipt.dart          a sale as printed, kept for reprints
-  state/till_state.dart   pairing, PIN sign-in (online and offline), catalog, basket, shifts, upload queue
+  state/till_state.dart   pairing, PIN sign-in (online and offline), catalog, basket, shifts, upload queue,
+                          fiscalising sales and refunds
+  fiscal/                 the till as a ZIMRA fiscal device: fdms.dart (receipts, signing, day totals, QR),
+                          fdms_keys.dart (its key and certificate request), fdms_client.dart (ZIMRA's API,
+                          with the device certificate over TLS), fiscal_device.dart (registration, fiscal day,
+                          queue, closing the day)
   screens/                setup, PIN, till, payment, receipt, sales, refund, shifts, customers, settings, camera scanner
   widgets/                product grid, basket, logo, shared pieces
   printing/
-    print_receipt.dart    prints the way the till is set up; cash drawer; test page
-    escpos.dart           receipts as ESC/POS for receipt printers
+    print_receipt.dart    prints the way the till is set up; cash drawer; test page; Z report
+    fiscal_print.dart     the ZIMRA parts of a receipt and the Z report, drawn by the screen, PDF and printer
+    escpos.dart           receipts as ESC/POS for receipt printers (with the QR code)
     printers*.dart        network printers, Windows printers (windows_spooler.dart), Android Bluetooth/USB
     receipt_pdf.dart      58/80 mm receipt for the print dialog and sharing
 android/app/src/main/kotlin/.../MainActivity.kt   Bluetooth and USB printing on Android
@@ -161,10 +169,12 @@ tool/render_icons.dart    draws the app icon (then `dart run flutter_launcher_ic
 | `GET /sales/:id`, `POST /sales/:id/returns` | Refunds (managers) |
 | `POST /sales/:id/requests`, `GET /sale-requests?mine=true`, `POST /sale-requests/:id/cancel` | Cashiers asking a manager for a refund or void |
 | `POST /customers` | Adding a customer at the till |
+| `PUT /till/fiscal-device`, `POST /till/fiscal-receipts` | The till's ZIMRA registration and status, and ZIMRA's answers for its receipts |
+
+The till also talks to ZIMRA itself (`fdmsapitest.zimra.co.zw` or `fdmsapi.zimra.co.zw`): RegisterDevice, GetConfig, GetStatus, OpenDay, SubmitReceipt, CloseDay, IssueCertificate and Ping. See "ZIMRA fiscalisation" in the main README.
 
 ## Next steps
 
-- ZIMRA fiscal receipts (with the QR code) once the API sends sales to FDMS.
 - Open tables and printed kitchen tickets for restaurants.
 - Wholesale quantity-break prices from price lists.
 - Bluetooth printing on iPhone and iPad (Bluetooth LE printers).

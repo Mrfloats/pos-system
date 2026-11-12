@@ -154,13 +154,28 @@ API environment variables, all optional: `MOBILE_ACCESS_SECONDS` (900), `REFRESH
 
 The API needs a redeploy, which applies migrations `0017` (permissions and audit), `0018` (phone sign-in, lockout, staff IDs) and `0019` (refund and void requests). Tills need the new app build for cashiers to ask for refunds and voids.
 
+## ZIMRA fiscalisation (FDMS)
+
+Each till is its own ZIMRA fiscal device (Fiscal Device Gateway API v7.2). The till does the fiscalising, so it carries on offline and prints the QR code straight away.
+
+- **Registering a till:** on the till, a manager opens **Till settings → ZIMRA**, chooses ZIMRA's test or live server, enters the device ID, activation key and serial number ZIMRA issued for that till, taps **Check with ZIMRA**, then **Register this till**. The till makes its own key (ECDSA P-256, kept in the device's secure storage), gets its certificate and settings from ZIMRA, and carries on ZIMRA's receipt and day numbers. Floatly makes sure one ZIMRA device isn't set up on two tills.
+- **Selling:** every sale is signed as a fiscal invoice before it's saved. The receipt shows ZIMRA's fields (taxpayer, FISCAL TAX INVOICE, invoice and fiscal day numbers, device, tax table) with the QR code and verification code. Receipts go to ZIMRA in order as soon as it can be reached, and Floatly is told what ZIMRA said. If a sale breaks ZIMRA's rules (a product without an HS code, a tax ZIMRA doesn't offer), the till says so and records nothing.
+- **Refunds** are credit notes for the original receipt, printed for the customer. A refund approved on a phone gets its credit note on the cashier's till. Sales reported to ZIMRA can't be voided: refund them instead.
+- **The fiscal day** opens with the first sale. A manager closes it with **End of day (Z report)**, which sends the day's signed totals and prints the Z report. The till warns before ZIMRA's limit (usually 24 hours) and stops selling at it.
+- **HS codes:** a VAT-registered business needs an HS code on every product (backoffice product form): 8 digits for zero-rated and exempt items, 4 or 8 otherwise. Tax rates are matched to ZIMRA's taxes by percent, or by the ZIMRA tax ID set on the rate in Settings.
+- **Backoffice:** each sale shows its ZIMRA status (Pending, Fiscalised, Failed) with the verification code and any errors from ZIMRA. Settings → Tills shows each till's ZIMRA device, fiscal day and receipts not yet sent.
+- **Limits:** only the Android and Windows apps fiscalise (a browser can't use ZIMRA's client certificate). Invoices typed into the backoffice aren't fiscalised.
+- **Going live:** register a device on ZIMRA's test server first. ZIMRA asks for sample invoices and credit notes before approving the software, then issues live devices. The device model name and version sent to ZIMRA (`Server` / `v1` by default) must be the ones registered with ZIMRA; change them under **Device model** when registering. The API needs a redeploy (migration `0020`) and tills need the new app build.
+
+The code is in `apps/till/lib/fiscal/` (receipts, signing, day totals and QR in `fdms.dart`; the ZIMRA API in `fdms_client.dart`; the device, day and queue in `fiscal_device.dart`) and `apps/api/src/sales/fiscal.ts` with the endpoints in `apps/api/src/till/till.ts`. The tests check the signing text against ZIMRA's own published example and run registration, selling offline, refunds and closing the day against an in-memory ZIMRA that verifies every signature.
+
 ## Tests
 
 ```bash
 npm run test:api
 ```
 
-The 140 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, and the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices.
+The 146 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 
@@ -184,7 +199,7 @@ apps/
       dashboard/          the phone's dashboard
       notifications/      the phone's bell
       common/permissions.ts  every permission and the roles that start with it
-      till/               the till app's catalog download (PIN sign-in is in auth/)
+      till/               the till app's catalog download and ZIMRA status (PIN sign-in is in auth/)
     test/                 end-to-end tests
   backoffice/
     src/app/(auth)/       sign in, sign up
@@ -195,6 +210,7 @@ apps/
     lib/state/            pairing, PIN sign-in, offline catalog, basket, shifts, upload queue
     lib/screens/          setup, PIN, till, payment, receipt, sales, refund, shifts
     lib/admin/            managing the business from a phone (see above)
+    lib/fiscal/           the till as a ZIMRA fiscal device (see above)
 docker/postgres/init.sql  creates the database and the two roles
 docker-compose.yml        PostgreSQL 16 and Redis 7 for development
 ```
@@ -209,7 +225,7 @@ When a request links to another record by id (category, store, variant…), chec
 
 ## Next steps
 
-1. **ZIMRA FDMS fiscalisation** and **Paynow** (EcoCash, OneMoney, InnBucks).
+1. **Paynow** (EcoCash, OneMoney, InnBucks), and ZIMRA fiscalisation for invoices made in the backoffice.
 2. **Restaurants on the till:** open tables and printed kitchen tickets.
 3. Backoffice screens for price lists, modifier groups and stock transfers. The API endpoints already exist.
 
