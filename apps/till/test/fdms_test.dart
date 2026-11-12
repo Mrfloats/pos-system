@@ -251,15 +251,22 @@ void main() {
       FdmsTax.fromJson({'taxID': 3, 'taxPercent': 15.0, 'taxName': 'Standard rated 15%', 'validFrom': '2023-01-01T00:00:00', 'validTill': '2024-12-31T00:00:00'}),
       FdmsTax.fromJson({'taxID': 517, 'taxPercent': 15.5, 'taxName': 'Standard rated 15.5%', 'validFrom': '2025-01-01T00:00:00'}),
     ];
-    TaxRate rate(String pct, [int? fiscalTaxId]) => TaxRate.fromJson({'id': 'r', 'name': 'VAT', 'rate': pct, 'fiscalTaxId': fiscalTaxId});
+    TaxRate rate(String pct, [int? fiscalTaxId, String name = 'VAT', String code = 'VAT']) =>
+        TaxRate.fromJson({'id': 'r', 'name': name, 'code': code, 'rate': pct, 'fiscalTaxId': fiscalTaxId});
     final today = DateTime(2026, 11, 12);
 
     test('finds the tax for a rate by percent, on the day', () {
       expect(fdmsTaxFor(rate('15.50'), taxes, today)!.id, 517);
       expect(fdmsTaxFor(rate('15.00'), taxes, today), isNull, reason: '15% ended in 2024');
       expect(fdmsTaxFor(rate('15.00'), taxes, DateTime(2024, 6, 1))!.id, 3);
-      expect(fdmsTaxFor(rate('0'), taxes, today)!.id, 2);
+      expect(fdmsTaxFor(rate('0', null, 'Zero-rated', 'ZERO'), taxes, today)!.id, 2);
       expect(fdmsTaxFor(null, taxes, today)!.id, 1, reason: 'no tax rate is exempt');
+    });
+
+    test("tells the business's Exempt rate from its Zero-rated one, though both are 0%", () {
+      expect(fdmsTaxFor(rate('0', null, 'Exempt', 'EXEMPT'), taxes, today)!.id, 1);
+      expect(fdmsTaxFor(rate('0.00', null, 'VAT exempt', 'X'), taxes, today)!.id, 1);
+      expect(fdmsTaxFor(rate('0', null, 'Exempt', 'EXEMPT'), taxes.where((t) => !t.exempt).toList(), today), isNull);
     });
 
     test('uses the tax named in the backoffice', () {

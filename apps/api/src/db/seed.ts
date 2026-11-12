@@ -20,6 +20,7 @@ import { InventoryService } from '../inventory/inventory.js';
 import { StaffService, StoresService } from '../organization/organization.service.js';
 import { DbService } from './db.service.js';
 import { customers, priceLists, users } from './schema.js';
+import { addTestProducts } from './test-products.js';
 
 const EMAIL = 'demo@pos.local';
 const PASSWORD = 'demo1234';
@@ -125,6 +126,8 @@ async function main() {
     kind: 'service',
     variants: [{ price: '2.00' }],
   });
+  // Products with HS codes and each tax treatment, for trying ZIMRA fiscalisation on a till.
+  await addTestProducts(app, ctx);
 
   await staff.create(ctx, {
     email: 'cashier@pos.local',

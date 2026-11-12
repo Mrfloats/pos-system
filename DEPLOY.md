@@ -293,6 +293,7 @@ The API's build also applies any new database migrations. Open the website's add
 | --- | --- |
 | After changing the code | `.\floatly-cloud.cmd deploy` (or `deploy api` / `deploy web`) |
 | Add a Floatly admin | `.\floatly-cloud.cmd admin you@example.com "a-long-password" "Your Name"` |
+| Add ZIMRA test products to a business (category "ZIMRA tests") | `.\floatly-cloud.cmd test-products owner@example.com "Business name"` |
 | Logs | Vercel dashboard → project → **Logs** |
 | Backups | Neon keeps a restore history (short on the free plan): Neon dashboard → **Backup & Restore**. For a copy of your own: `pg_dump` with the owner connection string. |
 

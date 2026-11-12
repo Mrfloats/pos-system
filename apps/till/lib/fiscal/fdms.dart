@@ -124,19 +124,21 @@ class FdmsTax {
   };
 }
 
+/// Whether a business's tax rate is "exempt" rather than zero-rated: both are
+/// 0%, but ZIMRA treats them as different taxes. Floatly names it Exempt (code EXEMPT).
+bool isExemptRate(TaxRate rate) => rate.hundredths == 0 && (rate.code.toUpperCase() == 'EXEMPT' || rate.name.toLowerCase().contains('exempt'));
+
 /// Which ZIMRA tax a product's tax rate is: the one named in the backoffice
-/// ([TaxRate.fiscalTaxId]) if set, else the one with the same percent valid on
-/// [date]. No tax rate means exempt (or 0% if ZIMRA offers no exempt tax).
-/// Null when nothing matches: the sale can't be fiscalised as it is.
+/// ([TaxRate.fiscalTaxId]) if set, else ZIMRA's exempt tax for an Exempt rate,
+/// else the one with the same percent valid on [date]. No tax rate means
+/// exempt (or 0% if ZIMRA offers no exempt tax). Null when nothing matches:
+/// the sale can't be fiscalised as it is.
 FdmsTax? fdmsTaxFor(TaxRate? rate, List<FdmsTax> taxes, DateTime date) {
   final valid = taxes.where((t) => t.validOn(date)).toList();
   if (rate?.fiscalTaxId != null) return valid.where((t) => t.id == rate!.fiscalTaxId).firstOrNull;
-  final pct = rate?.hundredths ?? 0;
-  if (rate == null || pct == 0) {
-    if (rate == null) return valid.where((t) => t.exempt).firstOrNull ?? valid.where((t) => t.percent == 0).firstOrNull;
-    return valid.where((t) => t.percent == 0).firstOrNull;
-  }
-  return valid.where((t) => t.percent == pct).firstOrNull;
+  if (rate == null) return valid.where((t) => t.exempt).firstOrNull ?? valid.where((t) => t.percent == 0).firstOrNull;
+  if (isExemptRate(rate)) return valid.where((t) => t.exempt).firstOrNull;
+  return valid.where((t) => t.percent == rate.hundredths).firstOrNull;
 }
 
 /// "15.00", "14.50", "0.00", or "" for exempt: a tax percent the way ZIMRA signs it.

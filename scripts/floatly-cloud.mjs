@@ -6,8 +6,11 @@
  *   floatly-cloud deploy api|web   just one of them
  *   floatly-cloud admin EMAIL PASSWORD "Your Name"   create (or grant) a Floatly admin login
  *   floatly-cloud admin EMAIL --revoke               remove it
+ *   floatly-cloud test-products OWNER-EMAIL ["Business name"]
+ *                                  add products for trying ZIMRA fiscalisation (after deploying the API)
  */
 import { spawnSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -54,6 +57,15 @@ if (command === 'deploy') {
   if (!args[0]) fail('Use: floatly-cloud admin EMAIL PASSWORD "Your Name"   (or EMAIL --revoke)');
   run('npm', ['run', 'build', '-w', 'apps/api', '--silent'], {}, true);
   run(process.execPath, ['apps/api/dist/db/platform-admin.js', ...args], { MIGRATION_DATABASE_URL: need('MIGRATION_DATABASE_URL') });
+} else if (command === 'test-products') {
+  if (!args[0]) fail('Use: floatly-cloud test-products OWNER-EMAIL ["Business name"]');
+  run('npm', ['run', 'build', '-w', 'apps/api', '--silent'], {}, true);
+  // Runs as the API does (row-level security); it signs no tokens, so any long secret will do.
+  run(process.execPath, ['apps/api/dist/db/test-products.js', ...args], {
+    DATABASE_URL: need('DATABASE_URL'),
+    MIGRATION_DATABASE_URL: need('MIGRATION_DATABASE_URL'),
+    JWT_SECRET: randomBytes(32).toString('hex'),
+  });
 } else {
-  fail('Use: floatly-cloud deploy [api|web]  |  floatly-cloud admin EMAIL PASSWORD "Your Name"');
+  fail('Use: floatly-cloud deploy [api|web]  |  floatly-cloud admin EMAIL PASSWORD "Your Name"  |  floatly-cloud test-products OWNER-EMAIL ["Business name"]');
 }
