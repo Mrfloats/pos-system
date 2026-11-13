@@ -3,7 +3,19 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { AllowLapsed, type AuthContext, Ctx, Public } from '../common/auth-context.js';
 import { PIN_NOT_SET } from '../common/lockout.js';
 import { type Limit, RateLimit } from '../common/rate-limit.js';
-import { ChangePasswordDto, LoginDto, LogoutDto, RefreshDto, SetPinDto, SignupRequestDto, SwitchTenantDto, TillSignInDto } from './auth.dto.js';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  LoginDto,
+  LogoutDto,
+  RefreshDto,
+  ResetPasswordDto,
+  ResetTokenDto,
+  SetPinDto,
+  SignupRequestDto,
+  SwitchTenantDto,
+  TillSignInDto,
+} from './auth.dto.js';
 import { AuthService } from './auth.service.js';
 
 /** Sign-up and sign-in attempts per minute from one address (raised only by the test suite). */
@@ -54,6 +66,33 @@ export class AuthController {
   @Post('logout')
   logout(@Body() dto: LogoutDto) {
     return this.auth.logout(dto);
+  }
+
+  /** "Forgot password": emails a link to choose a new one. The same answer whether or not the email has a login. */
+  @Public()
+  @RateLimit(AUTH_LIMIT)
+  @HttpCode(200)
+  @Post('forgot-password')
+  forgotPassword(@Body() dto: ForgotPasswordDto) {
+    return this.auth.forgotPassword(dto);
+  }
+
+  /** Whose login a reset link is for, so the page can say so before they choose a password. */
+  @Public()
+  @RateLimit(AUTH_LIMIT)
+  @HttpCode(200)
+  @Post('reset-password/check')
+  checkReset(@Body() dto: ResetTokenDto) {
+    return this.auth.checkReset(dto);
+  }
+
+  /** Choose a new password with the link's token. Ends every sign-in except on tills. */
+  @Public()
+  @RateLimit(AUTH_LIMIT)
+  @HttpCode(200)
+  @Post('reset-password')
+  resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.auth.resetPassword(dto);
   }
 
   /** Sign in on a paired till with a staff member's PIN. */

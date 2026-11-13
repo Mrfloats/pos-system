@@ -2798,3 +2798,101 @@ describe('retail and wholesale prices for every shop', () => {
     await http.patch(`/api/v1/products/variants/${flour}`).set(managerT).set(pin).send({ listPrices: [{ priceListId: theirs, price: '1.00' }] }).expect(400);
   });
 });
+
+describe('forgot password', () => {
+  const L = '/api/v1/auth/login';
+  const F = '/api/v1/auth/forgot-password';
+  const C = '/api/v1/auth/reset-password/check';
+  const RP = '/api/v1/auth/reset-password';
+  let mail: { sent: { to: string; subject: string; text: string; html?: string }[] };
+  let deviceToken: string;
+  const tokenIn = (text: string) => /\/reset-password#(pr_[\w-]+)/.exec(text)![1];
+
+  beforeAll(async () => {
+    const { MailService } = await import('../src/common/mail.service.js');
+    mail = app.get(MailService);
+    const ownerT = auth((await signup('Reset Shop', 'reset-owner@example.com')).accessToken);
+    const storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    await http
+      .post('/api/v1/staff')
+      .set(ownerT)
+      .send({ email: 'reset-manager@example.com', fullName: 'Tendai Moyo', password: 'password123', role: 'manager', pin: '2468', storeIds: [storeId] })
+      .expect(201);
+    const deviceId = (await http.post('/api/v1/devices').set(ownerT).send({ storeId, name: 'Till', code: 'r01' }).expect(201)).body.id;
+    deviceToken = (await http.post(`/api/v1/devices/${deviceId}/token`).set(ownerT).expect(201)).body.token;
+  });
+
+  it('emails a link that works once, ends a lockout and other sign-ins, but not a till’s', async () => {
+    const email = 'reset-manager@example.com';
+    const browser = auth((await http.post(L).send({ email, password: 'password123' }).expect(200)).body.accessToken);
+    const phone = (await http.post(L).send({ email, password: 'password123', session: 'mobile' }).expect(200)).body;
+    const till = auth((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '2468' }).expect(200)).body.accessToken);
+    for (let i = 0; i < 5; i++) await http.post(L).send({ email, password: 'wrong-password' });
+    await http.post(L).send({ email, password: 'password123' }).expect(429);
+
+    // An unknown email gets the same answer, and nothing is sent.
+    const before = mail.sent.length;
+    expect((await http.post(F).send({ email: 'nobody@example.com' }).expect(200)).body).toEqual({ ok: true });
+    expect(mail.sent).toHaveLength(before);
+
+    // Sign-ins are ended by the second, so these are from an earlier one than the reset.
+    await new Promise((r) => setTimeout(r, 1100));
+    expect((await http.post(F).send({ email: ' Reset-Manager@Example.com ' }).expect(200)).body).toEqual({ ok: true });
+    const sent = mail.sent.at(-1)!;
+    expect(sent).toMatchObject({ to: email, subject: 'Reset your Floatly password' });
+    expect(sent.text).toMatch(/^Hello Tendai,/);
+    expect(sent.text).toContain('within 60 minutes');
+    const token = tokenIn(sent.text);
+    expect(sent.html).toContain(`http://localhost:3000/reset-password#${token}`);
+    // Asking again at once doesn't send another.
+    await http.post(F).send({ email }).expect(200);
+    expect(mail.sent).toHaveLength(before + 1);
+
+    expect((await http.post(C).send({ token }).expect(200)).body).toEqual({ email });
+    await http.post(RP).send({ token, password: 'short' }).expect(400);
+    expect((await http.post(RP).send({ token, password: 'a-new-password' }).expect(200)).body).toEqual({ ok: true, email });
+
+    // The link works once.
+    expect((await http.post(RP).send({ token, password: 'another-password' }).expect(400)).body.message).toMatch(/expired or was already used/);
+    await http.post(C).send({ token }).expect(400);
+
+    // Earlier sign-ins in a browser and on the phone ended; the till's PIN sign-in didn't.
+    expect((await http.get('/api/v1/auth/me').set(browser).expect(401)).body).toMatchObject({ code: 'signed_out' });
+    await http.get('/api/v1/auth/me').set(auth(phone.accessToken)).expect(401);
+    await http.post('/api/v1/auth/refresh').send({ refreshToken: phone.refreshToken }).expect(401);
+    await http.get('/api/v1/auth/me').set(till).expect(200);
+
+    // The lockout is over, the old password is gone, and the new one works.
+    await http.post(L).send({ email, password: 'password123' }).expect(401);
+    const fresh = await http.post(L).send({ email, password: 'a-new-password' }).expect(200);
+    await http.get('/api/v1/auth/me').set(auth(fresh.body.accessToken)).expect(200);
+  });
+
+  it('does nothing with an expired link', async () => {
+    const email = 'reset-owner@example.com';
+    await http.post(F).send({ email }).expect(200);
+    expect(mail.sent.at(-1)!.to).toBe(email);
+    const token = tokenIn(mail.sent.at(-1)!.text);
+    const { createHash } = await import('node:crypto');
+    const db = ownerDb();
+    try {
+      await db.query(`UPDATE password_resets SET expires_at = now() - interval '1 second' WHERE token_hash = $1`, [createHash('sha256').update(token).digest('hex')]);
+    } finally {
+      await db.end();
+    }
+    await http.post(C).send({ token }).expect(400);
+    await http.post(RP).send({ token, password: 'a-new-password' }).expect(400);
+    await http.post(L).send({ email, password: 'password123' }).expect(200);
+  });
+
+  it('says so when this server has no way to send email', async () => {
+    const env = process.env.NODE_ENV;
+    process.env.NODE_ENV = 'production';
+    try {
+      const res = await http.post(F).send({ email: 'reset-owner@example.com' }).expect(503);
+      expect(res.body.message).toMatch(/isn't set up on this Floatly server/);
+    } finally {
+      process.env.NODE_ENV = env;
+    }
+  });
+});

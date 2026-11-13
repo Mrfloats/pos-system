@@ -193,6 +193,8 @@ export const users = pgTable('users', {
   /** Wrong passwords or PINs in a row. Enough of them lock the account for a while (common/lockout.ts). */
   failedLogins: integer('failed_logins').notNull().default(0),
   lockedUntil: timestamp('locked_until', { withTimezone: true }),
+  /** Sign-ins from before this were ended (a password reset). Tokens issued earlier are refused, except a till's. */
+  signedOutAt: timestamp('signed_out_at', { withTimezone: true }),
   /** Floatly staff who can see every business in the platform console. Granted with `npm run platform:admin`. */
   isPlatformAdmin: boolean('is_platform_admin').notNull().default(false),
   createdAt: createdAt(),
@@ -260,6 +262,25 @@ export const refreshTokens = pgTable(
     createdAt: createdAt(),
   },
   (t) => [index('refresh_tokens_family_idx').on(t.familyId), index('refresh_tokens_user_idx').on(t.userId)],
+);
+
+/**
+ * "Forgot password" links. The email carries the token; only its hash is stored.
+ * Each works once, for a short while. Looked up before anyone is signed in, so like users it has no tenant policy.
+ */
+export const passwordResets = pgTable(
+  'password_resets',
+  {
+    id: id(),
+    userId: uuid('user_id')
+      .notNull()
+      .references(() => users.id, { onDelete: 'cascade' }),
+    tokenHash: text('token_hash').notNull().unique(),
+    expiresAt: timestamp('expires_at', { withTimezone: true }).notNull(),
+    usedAt: timestamp('used_at', { withTimezone: true }),
+    createdAt: createdAt(),
+  },
+  (t) => [index('password_resets_user_idx').on(t.userId)],
 );
 
 export const stores = pgTable(

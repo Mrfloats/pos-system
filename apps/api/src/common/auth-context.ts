@@ -53,7 +53,12 @@ export interface JwtPayload {
   dfp?: string;
   /** Signed in on a phone, with a refresh token. */
   plt?: 'mobile';
+  /** Issued at (seconds), added when signing. */
+  iat?: number;
 }
+
+/** Sent with 401s when a password reset ended the sign-in. */
+export const SIGNED_OUT = 'signed_out';
 
 /** Sent with 401s when the till itself was switched off or set up again elsewhere, so the app can stop. */
 export const DEVICE_REVOKED = 'device_revoked';
@@ -83,6 +88,7 @@ export const ALL_ROLES: Role[] = [...MANAGERS, 'cashier', 'waiter', 'stock_clerk
 export interface PlatformJwtPayload {
   sub: string; // user id
   plat: true;
+  iat?: number;
 }
 
 /** The signed-in platform admin, attached to the request on platform pages. */

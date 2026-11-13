@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../screens/setup_screen.dart' show defaultServer;
 import '../widgets/common.dart';
+import '../widgets/forgot_password.dart';
 import 'admin_widgets.dart';
 
 /// An owner, admin or manager signs in with their email and password to manage
@@ -119,13 +120,20 @@ class _AdminLoginScreenState extends State<AdminLoginScreen> {
                               onSubmitted: (_) => _busy ? null : _signIn(),
                             ),
                             const SizedBox(height: 8),
-                            Align(
-                              alignment: Alignment.centerLeft,
-                              child: TextButton.icon(
-                                onPressed: () => setState(() => _showServer = !_showServer),
-                                icon: Icon(_showServer ? Icons.expand_less : Icons.dns_outlined, size: 18),
-                                label: const Text('Server'),
-                              ),
+                            // Side by side when they fit; on a narrow screen or with big text, one under the other.
+                            Wrap(
+                              alignment: WrapAlignment.spaceBetween,
+                              children: [
+                                TextButton.icon(
+                                  onPressed: () => setState(() => _showServer = !_showServer),
+                                  icon: Icon(_showServer ? Icons.expand_less : Icons.dns_outlined, size: 18),
+                                  label: const Text('Server'),
+                                ),
+                                TextButton(
+                                  onPressed: () => forgotPassword(context, server: _server.text.trim().isEmpty ? defaultServer : _server.text.trim(), email: _email.text),
+                                  child: const Text('Forgot password?'),
+                                ),
+                              ],
                             ),
                             if (_showServer) ...[
                               TextField(

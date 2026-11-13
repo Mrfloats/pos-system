@@ -126,6 +126,27 @@ export class ChangePasswordDto {
   newPassword: string;
 }
 
+/** "Forgot password": email a link to choose a new one. */
+export class ForgotPasswordDto {
+  @lower()
+  @IsEmail()
+  email: string;
+}
+
+/** The token from a "forgot password" email. */
+export class ResetTokenDto {
+  @IsString()
+  @MaxLength(200)
+  token: string;
+}
+
+export class ResetPasswordDto extends ResetTokenDto {
+  @IsString()
+  @MinLength(8)
+  @MaxLength(128)
+  password: string;
+}
+
 export const BILLING_PERIODS = ['monthly', 'yearly'] as const;
 export type BillingPeriod = (typeof BILLING_PERIODS)[number];
 

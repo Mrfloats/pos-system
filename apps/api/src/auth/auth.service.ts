@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
@@ -15,9 +16,22 @@ import { AuditService } from '../common/audit.service.js';
 import { assertNotLocked, clearFailures, recordFailure } from '../common/lockout.js';
 import { effectivePermissions } from '../common/permissions.js';
 import { nextStaffCode } from '../common/staff-code.js';
+import { MailService } from '../common/mail.service.js';
 import { DbService, Tx } from '../db/db.service.js';
-import { devices, memberships, plans, refreshTokens, signupRequests, stores, storeStaff, tenants, users } from '../db/schema.js';
-import { ChangePasswordDto, LoginDto, LogoutDto, RefreshDto, SetPinDto, SignupDto, SignupRequestDto, TillSignInDto } from './auth.dto.js';
+import { devices, memberships, passwordResets, plans, refreshTokens, signupRequests, stores, storeStaff, tenants, users } from '../db/schema.js';
+import {
+  ChangePasswordDto,
+  ForgotPasswordDto,
+  LoginDto,
+  LogoutDto,
+  RefreshDto,
+  ResetPasswordDto,
+  ResetTokenDto,
+  SetPinDto,
+  SignupDto,
+  SignupRequestDto,
+  TillSignInDto,
+} from './auth.dto.js';
 import { TenantSetupService } from './tenant-setup.service.js';
 
 /** A phone's access token lasts this long; the app swaps its refresh token for a new one before then. */
@@ -31,7 +45,19 @@ const REFRESH_IDLE_DAYS = Number(process.env.REFRESH_IDLE_DAYS ?? 30);
  */
 const REFRESH_REUSE_GRACE_SECONDS = 60;
 
+/** How long a "forgot password" link works. */
+const RESET_MINUTES = 60;
+const DEAD_RESET_LINK = 'This link has expired or was already used. Ask for a new one.';
+
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+
+const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
+
+/** The backoffice's address, for links in emails: WEB_URL, else the first allowed web origin. */
+export function webUrl() {
+  const url = process.env.WEB_URL || (process.env.CORS_ORIGINS ?? '').split(',')[0].trim() || 'http://localhost:3000';
+  return url.replace(/\/+$/, '');
+}
 
 /** What a new business needs: its details and its owner's login. */
 export interface NewBusiness {
@@ -55,6 +81,7 @@ export class AuthService {
     private readonly jwt: JwtService,
     private readonly setup: TenantSetupService,
     private readonly audit: AuditService,
+    private readonly mail: MailService,
   ) {}
 
   /**
@@ -328,6 +355,97 @@ export class AuthService {
       .set({ passwordHash: await hash(dto.newPassword) })
       .where(eq(users.id, auth.userId));
     return { ok: true };
+  }
+
+  /**
+   * "Forgot password": emails a link to choose a new one. The answer is the same whether
+   * or not the email has a login, so the form can't be used to find out who does.
+   */
+  async forgotPassword(dto: ForgotPasswordDto) {
+    if (!this.mail.ready) {
+      throw new ServiceUnavailableException("Resetting a password by email isn't set up on this Floatly server yet. Ask the business owner or Floatly for help.");
+    }
+    const [user] = await this.dbs.db.select({ id: users.id, email: users.email, fullName: users.fullName }).from(users).where(eq(users.email, dto.email)).limit(1);
+    if (!user) return { ok: true };
+    // At most one email a minute, so the form can't be used to flood someone's inbox.
+    const [recent] = await this.dbs.db
+      .select({ id: passwordResets.id })
+      .from(passwordResets)
+      .where(and(eq(passwordResets.userId, user.id), sql`${passwordResets.createdAt} > now() - interval '1 minute'`))
+      .limit(1);
+    if (recent) return { ok: true };
+
+    const token = `pr_${randomBytes(32).toString('base64url')}`;
+    await this.dbs.db.insert(passwordResets).values({
+      id: uuidv7(),
+      userId: user.id,
+      tokenHash: sha256(token),
+      expiresAt: sql`now() + make_interval(mins => ${RESET_MINUTES})`,
+    });
+    // After #, so the token never reaches a server log or another site as a referrer.
+    const link = `${webUrl()}/reset-password#${token}`;
+    const name = user.fullName.split(' ')[0];
+    await this.mail.send({
+      to: user.email,
+      subject: 'Reset your Floatly password',
+      text: [
+        `Hello ${name},`,
+        '',
+        `Someone asked to reset the password for your Floatly login (${user.email}). To choose a new password, open this link within ${RESET_MINUTES} minutes:`,
+        '',
+        link,
+        '',
+        "If it wasn't you, ignore this email. Your password stays as it is.",
+        '',
+        'Floatly',
+      ].join('\n'),
+      html: `<div style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.5;color:#1f2933;max-width:480px">
+<p>Hello ${escapeHtml(name)},</p>
+<p>Someone asked to reset the password for your Floatly login (${escapeHtml(user.email)}). To choose a new password, use this button within ${RESET_MINUTES} minutes:</p>
+<p><a href="${escapeHtml(link)}" style="display:inline-block;background:#166534;color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:10px">Choose a new password</a></p>
+<p style="color:#52606d;font-size:13px">Or open this link: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p>
+<p>If it wasn't you, ignore this email. Your password stays as it is.</p>
+<p>Floatly</p>
+</div>`,
+    });
+    return { ok: true };
+  }
+
+  /** Whose password a reset link is for, before they choose one. */
+  async checkReset(dto: ResetTokenDto) {
+    const [reset] = await this.dbs.db
+      .select({ email: users.email })
+      .from(passwordResets)
+      .innerJoin(users, eq(users.id, passwordResets.userId))
+      .where(and(eq(passwordResets.tokenHash, sha256(dto.token)), isNull(passwordResets.usedAt), sql`${passwordResets.expiresAt} > now()`))
+      .limit(1);
+    if (!reset) throw new BadRequestException(DEAD_RESET_LINK);
+    return { email: reset.email };
+  }
+
+  /**
+   * Sets the new password from a reset link. The link and any others for the same login stop
+   * working, a lockout ends, and every sign-in on a phone or in a browser ends (tills keep theirs).
+   */
+  async resetPassword(dto: ResetPasswordDto) {
+    const passwordHash = await hash(dto.password);
+    return this.dbs.db.transaction(async (tx) => {
+      const [reset] = await tx
+        .select({ userId: passwordResets.userId })
+        .from(passwordResets)
+        .where(and(eq(passwordResets.tokenHash, sha256(dto.token)), isNull(passwordResets.usedAt), sql`${passwordResets.expiresAt} > now()`))
+        .for('update')
+        .limit(1);
+      if (!reset) throw new BadRequestException(DEAD_RESET_LINK);
+      const [user] = await tx
+        .update(users)
+        .set({ passwordHash, failedLogins: 0, lockedUntil: null, signedOutAt: sql`now()` })
+        .where(eq(users.id, reset.userId))
+        .returning({ email: users.email });
+      await tx.update(passwordResets).set({ usedAt: sql`now()` }).where(and(eq(passwordResets.userId, reset.userId), isNull(passwordResets.usedAt)));
+      await tx.update(refreshTokens).set({ revokedAt: sql`now()` }).where(and(eq(refreshTokens.userId, reset.userId), isNull(refreshTokens.revokedAt)));
+      return { ok: true, email: user.email };
+    });
   }
 
   /** Active businesses this user belongs to, oldest first. */

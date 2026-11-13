@@ -136,6 +136,7 @@ The list is in `apps/api/src/common/permissions.ts`.
 - **Sessions:** a phone gets a 15-minute access token and a refresh token, kept in the phone's keychain and swapped for a new one each time. A refresh token used again after it was replaced ends the whole sign-in. Sign-ins unused for 30 days end. Logging out ends it on the server and removes the tokens, the saved figures and anything queued from the phone.
 - **PIN:** after a first sign-in the app offers to set a PIN, which then opens the app and locks it again after 5 minutes untouched. Changing a price, refunding, voiding and approving a request from a phone need the PIN again (`X-Floatly-Pin`).
 - **Lockout:** five wrong passwords or PINs in a row lock the account for 15 minutes.
+- **Forgot password:** "Forgot password?" on the website's sign-in, the phone app's sign-in and the till setup screen emails a link (`/reset-password#token`) that works once, for 60 minutes. Choosing the new password ends a lockout and every sign-in in a browser or on a phone; tills keep their PIN sign-ins. The answer doesn't say whether an email has a login. Email goes out through `SMTP_URL` (see DEPLOY.md); without it, development writes the email to the API's log.
 - **Audit:** every change records who, their role, the app (web, till or mobile), the store, and the value before and after (prices, stock levels, request decisions). See it with `GET /audit-logs`.
 
 ### Offline
@@ -176,7 +177,7 @@ The code is in `apps/till/lib/fiscal/` (receipts, signing, day totals and QR in 
 npm run test:api
 ```
 
-The 150 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices (every shop has a Wholesale list), restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
+The 153 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices (every shop has a Wholesale list), restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, forgot-password links, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 

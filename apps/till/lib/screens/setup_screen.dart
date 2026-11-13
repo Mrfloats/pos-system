@@ -5,6 +5,7 @@ import '../core/api.dart';
 import '../state/till_state.dart';
 import '../theme.dart';
 import '../widgets/common.dart';
+import '../widgets/forgot_password.dart';
 
 /// The Floatly server most businesses use.
 /// For testing against another server: flutter run --dart-define=FLOATLY_SERVER=http://localhost:4000
@@ -254,13 +255,20 @@ class _SetupScreenState extends State<SetupScreen> {
             onSubmitted: (_) => _busy ? null : _signIn(),
           ),
           const SizedBox(height: 8),
-          Align(
-            alignment: Alignment.centerLeft,
-            child: TextButton.icon(
-              onPressed: () => setState(() => _showServer = !_showServer),
-              icon: Icon(_showServer ? Icons.expand_less : Icons.dns_outlined, size: 18),
-              label: const Text('Server'),
-            ),
+          // Side by side when they fit; on a narrow screen or with big text, one under the other.
+          Wrap(
+            alignment: WrapAlignment.spaceBetween,
+            children: [
+              TextButton.icon(
+                onPressed: () => setState(() => _showServer = !_showServer),
+                icon: Icon(_showServer ? Icons.expand_less : Icons.dns_outlined, size: 18),
+                label: const Text('Server'),
+              ),
+              TextButton(
+                onPressed: () => forgotPassword(context, server: _server.text.trim().isEmpty ? defaultServer : _server.text.trim(), email: _email.text),
+                child: const Text('Forgot password?'),
+              ),
+            ],
           ),
           if (_showServer) ...[
             TextField(

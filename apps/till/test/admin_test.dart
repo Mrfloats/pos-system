@@ -1,4 +1,6 @@
+import 'package:floatly_till/admin/admin_login_screen.dart';
 import 'package:floatly_till/admin/admin_state.dart';
+import 'package:floatly_till/admin/admin_widgets.dart';
 import 'package:floatly_till/core/api.dart';
 import 'package:floatly_till/core/local_store.dart';
 import 'package:floatly_till/main.dart';
@@ -94,6 +96,34 @@ void main() {
       expect(store.secrets, isEmpty);
       expect(store.values, isEmpty);
       admin.dispose();
+    });
+
+    testWidgets('Forgot password? emails a link to the address typed in', (tester) async {
+      final fake = FakeServer();
+      Api.httpClient = MockClient(fake.handle);
+      final admin = AdminState(MemoryStore())..ready = true;
+      addTearDown(admin.dispose);
+      await tester.pumpWidget(AdminScope(state: admin, child: const MaterialApp(home: AdminLoginScreen())));
+      await tester.enterText(find.widgetWithText(TextField, 'Email'), ' admin@shop.test ');
+      await tester.tap(find.text('Forgot password?'));
+      await tester.pumpAndSettle();
+      expect(find.text('Forgot your password?'), findsOneWidget);
+      final inDialog = find.descendant(of: find.byType(AlertDialog), matching: find.byType(TextField));
+      expect(tester.widget<TextField>(inDialog).controller!.text, 'admin@shop.test');
+
+      // A server that can't send email says so.
+      fake.noEmail = true;
+      await tapAndSettle(tester, find.text('Send the link'));
+      expect(find.textContaining("isn't set up on this Floatly server"), findsOneWidget);
+
+      fake.noEmail = false;
+      await tapAndSettle(tester, find.text('Send the link'));
+      expect(fake.forgotten, ['admin@shop.test']);
+      expect(find.text('Check your email'), findsOneWidget);
+      expect(find.textContaining('If admin@shop.test has a Floatly login'), findsOneWidget);
+      await tester.tap(find.text('OK'));
+      await tester.pumpAndSettle();
+      expect(find.byType(AlertDialog), findsNothing);
     });
 
     test('starts locked next time, and the PIN unlocks it', () async {

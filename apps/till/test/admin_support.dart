@@ -58,6 +58,12 @@ class FakeServer {
   /// Every POST /inventory/movements body.
   final posted = <Map<String, dynamic>>[];
 
+  /// Emails "forgot password" was asked for.
+  final forgotten = <String>[];
+
+  /// The server has no way to send email.
+  bool noEmail = false;
+
   /// Products added with POST /products.
   final added = <Map<String, dynamic>>[];
 
@@ -518,6 +524,13 @@ class FakeServer {
       }
       expect(body['session'], 'mobile');
       return _json(_session());
+    }
+    if (path == '/auth/forgot-password') {
+      if (noEmail) {
+        return _json({'statusCode': 503, 'message': "Resetting a password by email isn't set up on this Floatly server yet. Ask the business owner or Floatly for help."}, 503);
+      }
+      forgotten.add(body['email'] as String);
+      return _json({'ok': true});
     }
     if (path == '/auth/refresh') {
       refreshes++;

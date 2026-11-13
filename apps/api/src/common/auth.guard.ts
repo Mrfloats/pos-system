@@ -12,9 +12,31 @@ import { JwtService } from '@nestjs/jwt';
 import { and, eq, sql } from 'drizzle-orm';
 import { DbService } from '../db/db.service.js';
 import { memberships, tenants, users } from '../db/schema.js';
-import { ALLOW_LAPSED, type AuthContext, CLIENT_HEADER, DEVICE_REVOKED, PIN_HEADER, GRACE_DAYS, IS_PLATFORM, IS_PUBLIC, JwtPayload, platformOf, PlatformJwtPayload, Role, ROLES } from './auth-context.js';
+import {
+  ALLOW_LAPSED,
+  type AuthContext,
+  CLIENT_HEADER,
+  DEVICE_REVOKED,
+  PIN_HEADER,
+  GRACE_DAYS,
+  IS_PLATFORM,
+  IS_PUBLIC,
+  JwtPayload,
+  platformOf,
+  PlatformJwtPayload,
+  Role,
+  ROLES,
+  SIGNED_OUT,
+} from './auth-context.js';
 import { confirmPin } from './lockout.js';
 import { effectivePermissions, NOT_PERMITTED, type Permission, PERMISSIONS_META } from './permissions.js';
+
+/** True when the user's sign-ins were ended (a password reset) after this token was issued. */
+const signedOutSince = (userId: string, iat: number | undefined) =>
+  sql<boolean>`coalesce((SELECT floor(extract(epoch FROM u.signed_out_at)) > ${iat ?? 0} FROM users u WHERE u.id = ${userId}), false)`;
+
+const signedOut = () =>
+  new UnauthorizedException({ statusCode: HttpStatus.UNAUTHORIZED, code: SIGNED_OUT, message: 'Your password was reset, so this sign-in ended. Sign in again.' });
 
 /**
  * Global guard: verifies the bearer token, then re-reads the membership so a
@@ -50,11 +72,12 @@ export class AuthGuard implements CanActivate {
     if ('plat' in verified) {
       if (!platformRoute) throw new UnauthorizedException('A platform sign-in only opens the platform console');
       const [user] = await this.dbs.db
-        .select({ admin: users.isPlatformAdmin })
+        .select({ admin: users.isPlatformAdmin, signedOut: signedOutSince(verified.sub, verified.iat) })
         .from(users)
         .where(eq(users.id, verified.sub))
         .limit(1);
       if (!user?.admin) throw new UnauthorizedException('Platform access was removed');
+      if (user.signedOut) throw signedOut();
       request.platform = { userId: verified.sub };
       return true;
     }
@@ -78,6 +101,8 @@ export class AuthGuard implements CanActivate {
             deviceOk: payload.did
               ? sql<boolean>`EXISTS (SELECT 1 FROM devices d WHERE d.id = ${payload.did} AND d.active AND left(d.token_hash, 16) = ${payload.dfp ?? ''})`
               : sql<boolean>`true`,
+            // A password reset ends sign-ins in browsers and on phones. A till's PIN sign-in doesn't use the password, so it stays.
+            signedOut: payload.did ? sql<boolean>`false` : signedOutSince(payload.sub, payload.iat),
           })
           .from(memberships)
           .innerJoin(tenants, eq(tenants.id, memberships.tenantId))
@@ -85,6 +110,7 @@ export class AuthGuard implements CanActivate {
           .limit(1),
     );
     if (!membership?.active) throw new UnauthorizedException('Access to this business was removed');
+    if (membership.signedOut) throw signedOut();
     if (!membership.deviceOk) {
       throw new UnauthorizedException({
         statusCode: HttpStatus.UNAUTHORIZED,
