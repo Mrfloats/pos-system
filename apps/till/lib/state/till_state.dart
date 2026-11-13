@@ -1084,7 +1084,10 @@ class TillState extends ChangeNotifier {
   /// A manager's refund. On a ZIMRA fiscal device it also issues the credit note
   /// (kept with the receipts, to print); `fiscalProblem` says if it couldn't.
   Future<Map<String, dynamic>> refund(String saleId, Map<String, dynamic> body) async {
-    final ret = ((await _call((api) => api.post('/sales/$saleId/returns', {...body, 'shiftId': ?shift?.id, 'deviceId': ?device?.deviceId}))) as Map).cast<String, dynamic>();
+    // A ZIMRA till names itself, as the credit note is its own. Other tills leave it out,
+    // so a Floatly server from before fiscalisation (which refuses the field) still takes the refund.
+    final till = fiscal.active ? device?.deviceId : null;
+    final ret = ((await _call((api) => api.post('/sales/$saleId/returns', {...body, 'shiftId': ?shift?.id, 'deviceId': ?till}))) as Map).cast<String, dynamic>();
     final problem = await _creditNote(ret);
     return {...ret, 'fiscalProblem': ?problem};
   }

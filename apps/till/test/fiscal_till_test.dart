@@ -32,6 +32,9 @@ class FakeFloatly {
   final devices = <Map<String, dynamic>>[];
   final returns = <String, Map<String, dynamic>>{};
 
+  /// Acts like a Floatly server from before fiscalisation, which refuses fields it doesn't know.
+  bool beforeFiscal = false;
+
   http.Response _json(Object body, [int status = 200]) => http.Response(jsonEncode(body), status, headers: {'content-type': 'application/json'});
 
   Future<http.Response> handle(http.Request req) async {
@@ -56,7 +59,12 @@ class FakeFloatly {
     }
     final returnOf = RegExp(r'^/sales/(sale-\d+)/returns$').firstMatch(path);
     if (req.method == 'POST' && returnOf != null) {
-      final id = 'ret-${returns.length + 1}';
+      if (beforeFiscal && body.containsKey('deviceId')) {
+        return _json({
+          'message': ['property deviceId should not exist'],
+        }, 400);
+      }
+      final id ='ret-${returns.length + 1}';
       returns[id] = {
         'id': id,
         'number': 'R-0000${returns.length + 1}',
@@ -186,6 +194,24 @@ void main() {
     expect(state.receipts, isEmpty);
     expect(state.fiscal.globalNo, 10);
     expect(state.cart, hasLength(1), reason: 'the basket stays to fix and try again');
+  });
+
+  test('a till that is not a ZIMRA device refunds without naming itself, so an older Floatly server takes it', () async {
+    await state.fiscal.forget();
+    floatly.beforeFiscal = true;
+    await sellCokes(1);
+    await state.sync();
+    final ret = await state.refund('sale-1', {
+      'lines': [
+        {'lineId': 'l1', 'quantity': '1.000'},
+      ],
+      'method': 'cash',
+      'reason': 'Flat',
+      'restock': true,
+    });
+    expect(ret['number'], 'R-00001');
+    expect(ret['fiscalProblem'], isNull);
+    expect(state.receiptFor('ret-1')?.fiscal, isNull);
   });
 
   test('a refund gives the customer a ZIMRA credit note for the original receipt', () async {
