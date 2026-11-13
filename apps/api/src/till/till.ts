@@ -3,11 +3,12 @@ import { ApiBearerAuth, ApiTags } from '@nestjs/swagger';
 import { IsUUID } from 'class-validator';
 import { and, asc, desc, eq, ne, sql } from 'drizzle-orm';
 import { type AuthContext, Ctx, FRONT_OF_HOUSE, Roles } from '../common/auth-context.js';
+import { EmailsService } from '../common/emails.service.js';
 import { divRound, fromCents, parseFixed, toBase, toCents } from '../accounting/money.js';
 import { found } from '../common/validation.js';
 import { DbService } from '../db/db.service.js';
 import { fiscalColumns, withResult } from '../sales/fiscal.js';
-import { FiscalDeviceDto, FiscalUpdatesDto } from '../sales/sales.dto.js';
+import { FiscalDeviceDto, type FiscalDeviceStateDto, FiscalUpdatesDto } from '../sales/sales.dto.js';
 import {
   categories,
   currencies,
@@ -37,9 +38,26 @@ export class TillCatalogQuery {
 /** Most customers a till keeps on hand for offline lookups. */
 const CUSTOMER_LIMIT = 5000;
 
+/**
+ * What has newly gone wrong on a live ZIMRA till, comparing its last report with this one;
+ * null when nothing has (or it's on ZIMRA's test server).
+ */
+export function zimraProblem(before: FiscalDeviceStateDto | null | undefined, after: FiscalDeviceStateDto | null | undefined) {
+  if (after?.environment !== 'live') return null;
+  if (after.dayStatus === 'FiscalDayCloseFailed' && before?.dayStatus !== 'FiscalDayCloseFailed') {
+    const day = after.dayNo ? `fiscal day ${after.dayNo}` : 'the fiscal day';
+    return `ZIMRA didn't accept the close of ${day}${after.lastError ? `: ${after.lastError}` : '.'}`;
+  }
+  if (after.lastError && after.lastError !== before?.lastError) return after.lastError;
+  return null;
+}
+
 @Injectable()
 export class TillService {
-  constructor(private readonly dbs: DbService) {}
+  constructor(
+    private readonly dbs: DbService,
+    private readonly emails: EmailsService,
+  ) {}
 
   /**
    * Everything a till needs to keep selling offline, in one download: the business
@@ -242,10 +260,11 @@ export class TillService {
    * A till reports its ZIMRA registration (device ID, serial number) and its
    * fiscal day and queue, so the backoffice can show every till's ZIMRA status.
    */
-  saveFiscalDevice(ctx: AuthContext, dto: FiscalDeviceDto) {
+  async saveFiscalDevice(ctx: AuthContext, dto: FiscalDeviceDto) {
     if (!ctx.deviceId) throw new BadRequestException('Only a till signed in with its own token can report this');
     const deviceId = ctx.deviceId;
-    return this.dbs.withTenant(ctx, async (tx) => {
+    const { before, ...row } = await this.dbs.withTenant(ctx, async (tx) => {
+      const [was] = await tx.select({ state: devices.fiscalState }).from(devices).where(eq(devices.id, deviceId)).limit(1);
       const fiscalDeviceId = dto.fiscalDeviceId ?? null;
       if (fiscalDeviceId !== null) {
         const [other] = await tx
@@ -265,8 +284,11 @@ export class TillService {
         .where(eq(devices.id, deviceId))
         .returning({ id: devices.id, fiscalDeviceId: devices.fiscalDeviceId, fiscalSerialNo: devices.fiscalSerialNo, fiscalState: devices.fiscalState });
       found(row, 'Till');
-      return row;
+      return { ...row, before: (was?.state ?? null) as FiscalDeviceDto['state'] };
     });
+    const problem = zimraProblem(before, dto.state);
+    if (problem) await this.emails.zimraProblem(ctx.tenantId, deviceId, problem);
+    return row;
   }
 
   /**

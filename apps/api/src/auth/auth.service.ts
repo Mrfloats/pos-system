@@ -16,7 +16,8 @@ import { AuditService } from '../common/audit.service.js';
 import { assertNotLocked, clearFailures, recordFailure } from '../common/lockout.js';
 import { effectivePermissions } from '../common/permissions.js';
 import { nextStaffCode } from '../common/staff-code.js';
-import { MailService } from '../common/mail.service.js';
+import { EmailsService, render } from '../common/emails.service.js';
+import { MailService, webUrl } from '../common/mail.service.js';
 import { DbService, Tx } from '../db/db.service.js';
 import { devices, memberships, passwordResets, plans, refreshTokens, signupRequests, stores, storeStaff, tenants, users } from '../db/schema.js';
 import {
@@ -51,14 +52,6 @@ const DEAD_RESET_LINK = 'This link has expired or was already used. Ask for a ne
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
 
-const escapeHtml = (s: string) => s.replace(/[&<>"']/g, (c) => `&#${c.charCodeAt(0)};`);
-
-/** The backoffice's address, for links in emails: WEB_URL, else the first allowed web origin. */
-export function webUrl() {
-  const url = process.env.WEB_URL || (process.env.CORS_ORIGINS ?? '').split(',')[0].trim() || 'http://localhost:3000';
-  return url.replace(/\/+$/, '');
-}
-
 /** What a new business needs: its details and its owner's login. */
 export interface NewBusiness {
   businessName: string;
@@ -82,6 +75,7 @@ export class AuthService {
     private readonly setup: TenantSetupService,
     private readonly audit: AuditService,
     private readonly mail: MailService,
+    private readonly emails: EmailsService,
   ) {}
 
   /**
@@ -162,7 +156,7 @@ export class AuthService {
     if (existing?.status === 'pending') {
       throw new ConflictException(`There's already a request for ${existing.business_name} waiting for approval with this email.`);
     }
-    const [plan] = await this.dbs.db.select({ id: plans.id, active: plans.active }).from(plans).where(eq(plans.id, dto.planId)).limit(1);
+    const [plan] = await this.dbs.db.select({ id: plans.id, name: plans.name, active: plans.active }).from(plans).where(eq(plans.id, dto.planId)).limit(1);
     if (!plan?.active) throw new BadRequestException('Choose one of the plans on offer');
     const id = uuidv7();
     // No RETURNING: applicants may add a request but not read requests back.
@@ -180,6 +174,8 @@ export class AuthService {
       billingPeriod: dto.billingPeriod,
       message: dto.message ?? null,
     });
+    await this.emails.signupReceived(dto);
+    await this.emails.signupWaiting({ ...dto, planName: plan.name });
     return { id, status: 'pending' as const, businessName: dto.businessName, email: dto.email };
   }
 
@@ -204,7 +200,7 @@ export class AuthService {
         );
       }
     }
-    if (user && !ok) await recordFailure(this.dbs.db, user.id);
+    if (user && !ok) await recordFailure(this.dbs.db, user.id, (id) => this.emails.accountLocked(id));
     if (!user || !ok) throw new UnauthorizedException('Wrong email or password');
 
     const choices = await this.businessesFor(user.id);
@@ -270,7 +266,7 @@ export class AuthService {
     const [user] = await this.dbs.db.select({ passwordHash: users.passwordHash, lockedUntil: users.lockedUntil }).from(users).where(eq(users.id, auth.userId));
     assertNotLocked(user.lockedUntil);
     if (!(await verify(user.passwordHash, dto.password).catch(() => false))) {
-      await recordFailure(this.dbs.db, auth.userId);
+      await recordFailure(this.dbs.db, auth.userId, (id) => this.emails.accountLocked(id));
       throw new BadRequestException('Wrong password');
     }
     await clearFailures(this.dbs.db, auth.userId);
@@ -354,6 +350,7 @@ export class AuthService {
       .update(users)
       .set({ passwordHash: await hash(dto.newPassword) })
       .where(eq(users.id, auth.userId));
+    await this.emails.passwordChanged(auth.userId, 'changed');
     return { ok: true };
   }
 
@@ -383,31 +380,15 @@ export class AuthService {
       expiresAt: sql`now() + make_interval(mins => ${RESET_MINUTES})`,
     });
     // After #, so the token never reaches a server log or another site as a referrer.
-    const link = `${webUrl()}/reset-password#${token}`;
-    const name = user.fullName.split(' ')[0];
-    await this.mail.send({
-      to: user.email,
-      subject: 'Reset your Floatly password',
-      text: [
-        `Hello ${name},`,
-        '',
-        `Someone asked to reset the password for your Floatly login (${user.email}). To choose a new password, open this link within ${RESET_MINUTES} minutes:`,
-        '',
-        link,
-        '',
-        "If it wasn't you, ignore this email. Your password stays as it is.",
-        '',
-        'Floatly',
-      ].join('\n'),
-      html: `<div style="font-family:system-ui,sans-serif;font-size:15px;line-height:1.5;color:#1f2933;max-width:480px">
-<p>Hello ${escapeHtml(name)},</p>
-<p>Someone asked to reset the password for your Floatly login (${escapeHtml(user.email)}). To choose a new password, use this button within ${RESET_MINUTES} minutes:</p>
-<p><a href="${escapeHtml(link)}" style="display:inline-block;background:#166534;color:#fff;text-decoration:none;font-weight:600;padding:12px 20px;border-radius:10px">Choose a new password</a></p>
-<p style="color:#52606d;font-size:13px">Or open this link: <a href="${escapeHtml(link)}">${escapeHtml(link)}</a></p>
-<p>If it wasn't you, ignore this email. Your password stays as it is.</p>
-<p>Floatly</p>
-</div>`,
-    });
+    // Unlike the other emails, a failure here is the answer: they're waiting for this one.
+    await this.mail.send(
+      render(user, {
+        subject: 'Reset your Floatly password',
+        lines: [`Someone asked to reset the password for your Floatly login (${user.email}). To choose a new password, use the link within ${RESET_MINUTES} minutes.`],
+        button: { label: 'Choose a new password', url: `${webUrl()}/reset-password#${token}` },
+        after: ["If it wasn't you, ignore this email. Your password stays as it is."],
+      }),
+    );
     return { ok: true };
   }
 
@@ -429,7 +410,7 @@ export class AuthService {
    */
   async resetPassword(dto: ResetPasswordDto) {
     const passwordHash = await hash(dto.password);
-    return this.dbs.db.transaction(async (tx) => {
+    const done = await this.dbs.db.transaction(async (tx) => {
       const [reset] = await tx
         .select({ userId: passwordResets.userId })
         .from(passwordResets)
@@ -444,8 +425,10 @@ export class AuthService {
         .returning({ email: users.email });
       await tx.update(passwordResets).set({ usedAt: sql`now()` }).where(and(eq(passwordResets.userId, reset.userId), isNull(passwordResets.usedAt)));
       await tx.update(refreshTokens).set({ revokedAt: sql`now()` }).where(and(eq(refreshTokens.userId, reset.userId), isNull(refreshTokens.revokedAt)));
-      return { ok: true, email: user.email };
+      return { userId: reset.userId, email: user.email };
     });
+    await this.emails.passwordChanged(done.userId, 'reset');
+    return { ok: true, email: done.email };
   }
 
   /** Active businesses this user belongs to, oldest first. */

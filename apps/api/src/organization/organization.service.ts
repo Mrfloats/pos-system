@@ -8,6 +8,7 @@ import { hash, verify } from '@node-rs/argon2';
 import { createHash, randomBytes } from 'node:crypto';
 import { and, asc, eq, inArray, isNotNull, ne } from 'drizzle-orm';
 import { AuditService } from '../common/audit.service.js';
+import { EmailsService } from '../common/emails.service.js';
 import { type AuthContext } from '../common/auth-context.js';
 import { nextStaffCode } from '../common/staff-code.js';
 import { effectivePermissions, permissionCatalog } from '../common/permissions.js';
@@ -37,7 +38,11 @@ export class StoresService extends TenantCrud<typeof stores> {
 
 @Injectable()
 export class DevicesService extends TenantCrud<typeof devices> {
-  constructor(dbs: DbService, audit: AuditService) {
+  constructor(
+    dbs: DbService,
+    audit: AuditService,
+    private readonly emails: EmailsService,
+  ) {
     super(dbs, audit, devices, {
       entity: 'Device',
       searchColumns: [devices.name, devices.code],
@@ -49,8 +54,8 @@ export class DevicesService extends TenantCrud<typeof devices> {
    * Issues a new secret for a till to sign in with. Only its hash is stored;
    * the token is shown once and replaces any previous one.
    */
-  issueToken(ctx: AuthContext, id: string) {
-    return this.dbs.withTenant(ctx, async (tx) => {
+  async issueToken(ctx: AuthContext, id: string) {
+    const issued = await this.dbs.withTenant(ctx, async (tx) => {
       const token = `dev_${randomBytes(32).toString('base64url')}`;
       const tokenHash = createHash('sha256').update(token).digest('hex');
       const rows = await tx
@@ -62,6 +67,9 @@ export class DevicesService extends TenantCrud<typeof devices> {
       await this.audit.log(tx, ctx, 'issue_token', 'Device', id);
       return { deviceId: id, token };
     });
+    // Whoever has the device can now sign staff in on it: the owners hear of it.
+    await this.emails.tillSetUp(ctx.tenantId, id, ctx.userId);
+    return issued;
   }
 }
 
@@ -97,6 +105,7 @@ export class StaffService {
   constructor(
     private readonly dbs: DbService,
     private readonly audit: AuditService,
+    private readonly emails: EmailsService,
   ) {}
 
   list(ctx: AuthContext) {
@@ -142,10 +151,11 @@ export class StaffService {
     await this.dbs.withTenant(ctx, (tx) => assertPlanAllows(tx, 'staff'));
     // Users are global (one login can work for several businesses).
     let [user] = await this.dbs.db
-      .select({ id: users.id })
+      .select({ id: users.id, email: users.email, fullName: users.fullName })
       .from(users)
       .where(eq(users.email, dto.email))
       .limit(1);
+    const newLogin = !user;
     if (!user) {
       if (!dto.password) {
         throw new BadRequestException('A password is required for a new staff account');
@@ -153,7 +163,7 @@ export class StaffService {
       [user] = await this.dbs.db
         .insert(users)
         .values({ email: dto.email, fullName: dto.fullName, passwordHash: await hash(dto.password) })
-        .returning({ id: users.id });
+        .returning({ id: users.id, email: users.email, fullName: users.fullName });
     }
 
     const membershipId = await this.dbs.withTenant(ctx, async (tx) => {
@@ -172,11 +182,13 @@ export class StaffService {
       });
       return m.id;
     });
+    await this.emails.addedToBusiness(ctx.tenantId, user, dto.role, ctx.userId, newLogin);
+    if (dto.role === 'owner' || dto.role === 'admin') await this.emails.madeOwnerOrAdmin(ctx.tenantId, user, dto.role, ctx.userId);
     return this.get(ctx, membershipId);
   }
 
   async update(ctx: AuthContext, id: string, dto: UpdateStaffDto) {
-    await this.dbs.withTenant(ctx, async (tx) => {
+    const before = await this.dbs.withTenant(ctx, async (tx) => {
       const [current] = await tx.select().from(memberships).where(eq(memberships.id, id));
       found(current, 'Staff member');
 
@@ -226,7 +238,13 @@ export class StaffService {
         { ...dto, pin: dto.pin ? '***' : undefined },
         dto.deniedPermissions ? { old: { deniedPermissions: current.deniedPermissions }, new: { deniedPermissions: dto.deniedPermissions } } : undefined,
       );
+      return current;
     });
+    // Given the run of the business: the other owners hear of it.
+    if ((dto.role === 'owner' || dto.role === 'admin') && dto.role !== before.role) {
+      const [person] = await this.dbs.db.select({ email: users.email, fullName: users.fullName }).from(users).where(eq(users.id, before.userId));
+      if (person) await this.emails.madeOwnerOrAdmin(ctx.tenantId, person, dto.role, ctx.userId);
+    }
     return this.get(ctx, id);
   }
 

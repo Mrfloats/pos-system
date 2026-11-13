@@ -162,6 +162,13 @@
       "when": 1794562392137,
       "tag": "0022_password_reset",
       "breakpoints": true
+    },
+    {
+      "idx": 23,
+      "version": "7",
+      "when": 1794573989961,
+      "tag": "0023_emails",
+      "breakpoints": true
     }
   ]
 }

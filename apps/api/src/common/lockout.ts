@@ -32,8 +32,14 @@ export function assertNotLocked(lockedUntil: Date | null | undefined) {
   if (lockedUntil && lockedUntil.getTime() > Date.now()) throw locked(lockedUntil);
 }
 
-/** Counts a wrong password or PIN. Throws when that locks the account; otherwise the caller says what was wrong. */
-export async function recordFailure(db: Db, userId: string) {
+/** Told when a wrong password or PIN has just locked the account (to email the person). */
+export type OnLocked = (userId: string) => Promise<void>;
+
+/**
+ * Counts a wrong password or PIN. Throws when that locks the account (after `onLocked`);
+ * otherwise the caller says what was wrong.
+ */
+export async function recordFailure(db: Db, userId: string, onLocked?: OnLocked) {
   const res = await db.execute(sql`
     UPDATE users
        SET failed_logins = CASE WHEN failed_logins + 1 >= ${MAX_FAILURES} THEN 0 ELSE failed_logins + 1 END,
@@ -41,7 +47,11 @@ export async function recordFailure(db: Db, userId: string) {
      WHERE id = ${userId}
      RETURNING locked_until`);
   const until = (res.rows[0] as { locked_until: Date | string | null } | undefined)?.locked_until;
-  if (until) assertNotLocked(new Date(until));
+  // Callers check the lock first, so a lock in the future here is one this attempt just set.
+  if (until && new Date(until).getTime() > Date.now()) {
+    await onLocked?.(userId);
+    assertNotLocked(new Date(until));
+  }
 }
 
 /** A right password or PIN starts the count again. */
@@ -53,12 +63,12 @@ export async function clearFailures(db: Db, userId: string) {
  * Checks a PIN sent to confirm a sensitive action (the X-Floatly-Pin header).
  * Wrong PINs count towards locking the account, like wrong passwords.
  */
-export async function confirmPin(db: Db, userId: string, pinHash: string, pin: string) {
+export async function confirmPin(db: Db, userId: string, pinHash: string, pin: string, onLocked?: OnLocked) {
   const [user] = await db.select({ lockedUntil: users.lockedUntil, failedLogins: users.failedLogins }).from(users).where(eq(users.id, userId));
   assertNotLocked(user?.lockedUntil);
   const ok = /^\d{4,6}$/.test(pin) && (await verify(pinHash, pin).catch(() => false));
   if (!ok) {
-    await recordFailure(db, userId);
+    await recordFailure(db, userId, onLocked);
     throw new ForbiddenException({ statusCode: HttpStatus.FORBIDDEN, code: WRONG_PIN, message: 'Wrong PIN' });
   }
   if (user?.failedLogins) await clearFailures(db, userId);

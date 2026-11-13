@@ -21,6 +21,7 @@ import { AuthModule } from '../auth/auth.module.js';
 import { AuthService } from '../auth/auth.service.js';
 import { BILLING_PERIODS, type BillingPeriod } from '../auth/auth.dto.js';
 import { AuditService } from '../common/audit.service.js';
+import { EmailsService } from '../common/emails.service.js';
 import { AllowLapsed, type AuthContext, Ctx, GRACE_DAYS, type PlatformContext, PlatformCtx, PlatformOnly } from '../common/auth-context.js';
 import { IsMoney, ToDecimalString, Trim } from '../common/validation.js';
 import { DbService, Tx } from '../db/db.service.js';
@@ -158,6 +159,7 @@ export class SubscriptionsService {
     private readonly dbs: DbService,
     private readonly audit: AuditService,
     private readonly auth: AuthService,
+    private readonly emails: EmailsService,
   ) {}
 
   /** A business's own subscription: plan, paid-up date, payments, and the plans on offer. */
@@ -247,9 +249,9 @@ export class SubscriptionsService {
     );
   }
 
-  /** Creates the business and its owner's login from a request, and starts its subscription. All or nothing. */
-  approve(ctx: PlatformContext, id: string, dto: ApproveRequestDto) {
-    return this.dbs.db.transaction(async (tx) => {
+  /** Creates the business and its owner's login from a request, and starts its subscription. All or nothing; then the owner is emailed. */
+  async approve(ctx: PlatformContext, id: string, dto: ApproveRequestDto) {
+    const { owner, ...done } = await this.dbs.db.transaction(async (tx) => {
       await tx.execute(sql`select set_config('app.user_id', ${ctx.userId}, true)`);
       const [r] = await tx.select().from(signupRequests).where(eq(signupRequests.id, id)).for('update').limit(1);
       if (!r) throw new NotFoundException('Request not found');
@@ -282,20 +284,24 @@ export class SubscriptionsService {
       }
       await tx.update(signupRequests).set({ status: 'approved', tenantId, reviewedBy: ctx.userId, reviewedAt: new Date() }).where(eq(signupRequests.id, id));
       await this.audit.log(tx, { tenantId, userId: ctx.userId }, 'approve_signup', 'Business', tenantId, { plan: plan.name, period, paidUntil: end });
-      return { tenantId, businessName: r.businessName, plan: plan.name, billingPeriod: period, currentPeriodEnd: end };
+      return { owner: { email: r.email, fullName: r.fullName }, tenantId, businessName: r.businessName, plan: plan.name, billingPeriod: period, currentPeriodEnd: end };
     });
+    await this.emails.signupApproved({ ...owner, businessName: done.businessName, planName: done.plan, currentPeriodEnd: done.currentPeriodEnd });
+    return done;
   }
 
-  reject(ctx: PlatformContext, id: string, dto: RejectRequestDto) {
-    return this.asAdmin(ctx, async (tx) => {
-      const [r] = await tx
+  async reject(ctx: PlatformContext, id: string, dto: RejectRequestDto) {
+    const r = await this.asAdmin(ctx, async (tx) => {
+      const [row] = await tx
         .update(signupRequests)
         .set({ status: 'rejected', decisionNote: dto.reason, reviewedBy: ctx.userId, reviewedAt: new Date() })
         .where(and(eq(signupRequests.id, id), eq(signupRequests.status, 'pending')))
-        .returning({ id: signupRequests.id, businessName: signupRequests.businessName });
-      if (!r) throw new BadRequestException('This request is not waiting for a decision');
-      return r;
+        .returning({ id: signupRequests.id, businessName: signupRequests.businessName, email: signupRequests.email, fullName: signupRequests.fullName });
+      if (!row) throw new BadRequestException('This request is not waiting for a decision');
+      return row;
     });
+    await this.emails.signupRejected({ email: r.email, fullName: r.fullName, businessName: r.businessName, reason: dto.reason });
+    return { id: r.id, businessName: r.businessName };
   }
 
   // ----- Platform: one business's subscription --------------------------------------------
@@ -328,9 +334,9 @@ export class SubscriptionsService {
     });
   }
 
-  /** A payment extends the paid-up date by one period, from where it ends now (or today, if it already ended). */
-  recordPayment(ctx: PlatformContext, tenantId: string, dto: RecordPaymentDto) {
-    return this.asAdminIn(ctx, tenantId, async (tx) => {
+  /** A payment extends the paid-up date by one period, from where it ends now (or today, if it already ended). The owners get a receipt. */
+  async recordPayment(ctx: PlatformContext, tenantId: string, dto: RecordPaymentDto) {
+    const { receipt, ...done } = await this.asAdminIn(ctx, tenantId, async (tx) => {
       const [t] = await tx.select().from(tenants);
       const planId = dto.planId ?? t.planId;
       const period = dto.billingPeriod ?? t.billingPeriod ?? 'monthly';
@@ -355,12 +361,15 @@ export class SubscriptionsService {
       });
       await tx.update(tenants).set({ planId, billingPeriod: period, subscriptionStatus: 'active', currentPeriodEnd: end }).where(eq(tenants.id, tenantId));
       await this.audit.log(tx, { tenantId, userId: ctx.userId }, 'subscription_payment', 'Business', tenantId, { amount: dto.amount, paidUntil: end });
-      return { periodStart: start, periodEnd: end };
+      return { periodStart: start, periodEnd: end, receipt: { amount: dto.amount, currency: plan.currency, method: dto.method, reference: dto.reference, planName: plan.name } };
     });
+    await this.emails.paymentRecorded(tenantId, { ...receipt, periodEnd: done.periodEnd });
+    return done;
   }
 
-  updateSubscription(ctx: PlatformContext, tenantId: string, dto: UpdateSubscriptionDto) {
-    return this.asAdminIn(ctx, tenantId, async (tx) => {
+  async updateSubscription(ctx: PlatformContext, tenantId: string, dto: UpdateSubscriptionDto) {
+    const was = await this.asAdminIn(ctx, tenantId, async (tx) => {
+      const [before] = await tx.select({ status: tenants.subscriptionStatus }).from(tenants);
       const changes: Partial<typeof tenants.$inferInsert> = {};
       if (dto.planId !== undefined) changes.planId = dto.planId;
       if (dto.billingPeriod) changes.billingPeriod = dto.billingPeriod;
@@ -369,8 +378,11 @@ export class SubscriptionsService {
       if (!Object.keys(changes).length) throw new BadRequestException('Nothing to change');
       await tx.update(tenants).set(changes).where(eq(tenants.id, tenantId));
       await this.audit.log(tx, { tenantId, userId: ctx.userId }, 'subscription_change', 'Business', tenantId, dto);
-      return { ok: true };
+      return before.status;
     });
+    // Suspended, cancelled or open again: the owners are told.
+    if (dto.status && dto.status !== was) await this.emails.subscriptionStatusChanged(tenantId, dto.status);
+    return { ok: true };
   }
 
   /** Every business's subscription and the plans, for the console's lists and totals. */

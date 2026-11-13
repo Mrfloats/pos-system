@@ -8,6 +8,12 @@ export interface Mail {
   html?: string;
 }
 
+/** The backoffice's address, for links in emails: WEB_URL, else the first allowed web origin. */
+export function webUrl() {
+  const url = process.env.WEB_URL || (process.env.CORS_ORIGINS ?? '').split(',')[0].trim() || 'http://localhost:3000';
+  return url.replace(/\/+$/, '');
+}
+
 /**
  * Sends email through any SMTP account, set with SMTP_URL, for example
  * `smtps://you%40gmail.com:app-password@smtp.gmail.com:465` (a Gmail app password works),
@@ -34,7 +40,8 @@ export class MailService {
     if (!url) {
       if (!this.ready) throw new ServiceUnavailableException('Email is not set up on this Floatly server');
       this.sent.push(mail);
-      this.log.log(`Not sent (no SMTP_URL). To ${mail.to}: ${mail.subject}\n${mail.text}`);
+      // In development the whole email, so its links can be followed; the tests read `sent`.
+      if (process.env.NODE_ENV !== 'test') this.log.log(`Not sent (no SMTP_URL). To ${mail.to}: ${mail.subject}\n${mail.text}`);
       return;
     }
     this.transport ??= nodemailer.createTransport(

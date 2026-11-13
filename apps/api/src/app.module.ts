@@ -12,6 +12,7 @@ import { CustomersModule } from './customers/customers.js';
 import { DbModule } from './db/db.module.js';
 import { HealthController } from './health.controller.js';
 import { DashboardModule } from './dashboard/dashboard.js';
+import { DailyChecksModule } from './notifications/daily-checks.js';
 import { NotificationsModule } from './notifications/notifications.js';
 import { InventoryModule } from './inventory/inventory.js';
 import { OrganizationModule } from './organization/organization.module.js';
@@ -49,6 +50,7 @@ import { TillModule } from './till/till.js';
     TillModule,
     DashboardModule,
     NotificationsModule,
+    DailyChecksModule,
   ],
   controllers: [HealthController],
   providers: [

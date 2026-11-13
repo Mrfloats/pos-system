@@ -272,6 +272,7 @@ Settings for each (Vercel dashboard → project → **Settings → Environment V
 | floatly-api | `RATE_LIMIT` | `1200` |
 | floatly-api | `SMTP_URL` | the mail account for "Forgot password?" emails, e.g. `smtps://you%40gmail.com:APP-PASSWORD@smtp.gmail.com:465` (a Gmail [app password](https://myaccount.google.com/apppasswords): 2-step verification on, 16 letters, no spaces; write `@` in the address as `%40`). Without it, "Forgot password?" says email isn't set up. |
 | floatly-api | `MAIL_FROM` | optional: the sender people see, e.g. `Floatly <you@gmail.com>` (by default, the SMTP address) |
+| floatly-api | `CRON_SECRET` | optional but recommended: any long random value. Vercel Cron sends it when it runs the daily email check (`/api/v1/cron/daily`, 06:00 UTC, set in `apps/api/vercel.json`); with it set, nobody else can start that check. |
 | floatly-web | `NEXT_PUBLIC_API_URL` | the API's address + `/api/v1`, e.g. `https://floatly-api.vercel.app/api/v1` |
 
 Then create `.env.vercel` in the project folder (it is never uploaded) with the ids from each project's **Settings → General** and your team id from **Team Settings**:

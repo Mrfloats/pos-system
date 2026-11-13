@@ -137,6 +137,13 @@ The list is in `apps/api/src/common/permissions.ts`.
 - **PIN:** after a first sign-in the app offers to set a PIN, which then opens the app and locks it again after 5 minutes untouched. Changing a price, refunding, voiding and approving a request from a phone need the PIN again (`X-Floatly-Pin`).
 - **Lockout:** five wrong passwords or PINs in a row lock the account for 15 minutes.
 - **Forgot password:** "Forgot password?" on the website's sign-in, the phone app's sign-in and the till setup screen emails a link (`/reset-password#token`) that works once, for 60 minutes. Choosing the new password ends a lockout and every sign-in in a browser or on a phone; tills keep their PIN sign-ins. The answer doesn't say whether an email has a login. Email goes out through `SMTP_URL` (see DEPLOY.md); without it, development writes the email to the API's log.
+- **Emails for serious events** (`apps/api/src/common/emails.service.ts`):
+  - **To someone opening a business:** request received, approved (with a sign-in button) or turned down (with the reason). Floatly's staff hear of each new request.
+  - **To the owners about the subscription:** a payment receipt; the business suspended, cancelled or open again; 7 days before the paid-up date, when it has passed, and when the business locks.
+  - **To the person:** password changed, login locked (once a day at most), added to a business.
+  - **To the owners about access and tills:** someone made an owner or admin; a till set up.
+  - **To the owners about ZIMRA:** a live till reports a ZIMRA problem (once a day per till), or leaves a fiscal day open over 24 hours.
+  - **How they're sent:** a failed email never stops the action it's about. Date-based ones come from a daily check (Vercel Cron, or every 6 hours on a long-running server) and go once each. Day-to-day matters (low stock, refund requests, takings) stay in the phone app's notifications.
 - **Audit:** every change records who, their role, the app (web, till or mobile), the store, and the value before and after (prices, stock levels, request decisions). See it with `GET /audit-logs`.
 
 ### Offline
@@ -177,7 +184,7 @@ The code is in `apps/till/lib/fiscal/` (receipts, signing, day totals and QR in 
 npm run test:api
 ```
 
-The 153 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices (every shop has a Wholesale list), restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, forgot-password links, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
+The 159 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices (every shop has a Wholesale list), restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, forgot-password links, the emails for serious events, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 

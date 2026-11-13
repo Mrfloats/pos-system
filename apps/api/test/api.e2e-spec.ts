@@ -2896,3 +2896,201 @@ describe('forgot password', () => {
     }
   });
 });
+
+describe('emails for serious events', () => {
+  let mail: { sent: { to: string; subject: string; text: string; html?: string }[] };
+  let ownerT: Record<string, string>;
+  let tenantId: string;
+  let storeId: string;
+  const OWNER = 'mailshop@example.com';
+  const newSince = (n: number) => mail.sent.slice(n);
+  const last = () => mail.sent.at(-1)!;
+  const daysFromToday = (n: number) => {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + n);
+    return d.toISOString().slice(0, 10);
+  };
+  const ask = (businessName: string, email: string) =>
+    http
+      .post('/api/v1/auth/signup-requests')
+      .send({ businessName, businessType: 'retail', fullName: 'Chipo Banda', email, phone: '+263 77 000 0000', password: 'password123', planId: unlimitedPlanId, billingPeriod: 'monthly' })
+      .expect(201);
+
+  beforeAll(async () => {
+    const { MailService } = await import('../src/common/mail.service.js');
+    mail = app.get(MailService);
+  });
+
+  it('tells the person opening a business, and Floatly’s staff, at each step', async () => {
+    const before = mail.sent.length;
+    const req = await ask('Mail Shop', OWNER);
+    const received = newSince(before).find((m) => m.to === OWNER)!;
+    expect(received.subject).toBe('We received your request for Mail Shop');
+    expect(received.text).toMatch(/^Hello Chipo,/);
+    const staff = newSince(before).find((m) => m.to === 'staff@floatly.test')!;
+    expect(staff.subject).toBe('New business waiting for approval: Mail Shop');
+    expect(staff.text).toContain('Chipo Banda (mailshop@example.com, +263 77 000 0000) asked to open Mail Shop, a shop, on the');
+    expect(staff.text).toContain('Review the request: http://localhost:3000/platform/requests');
+
+    await http.post(`/api/v1/platform/requests/${req.body.id}/approve`).set(adminT).send({}).expect(201);
+    expect(last()).toMatchObject({ to: OWNER, subject: 'Mail Shop is ready on Floatly' });
+    expect(last().text).toMatch(/paid up to \w+day,? \d{1,2} \w+ \d{4}\./);
+    expect(last().text).toContain('Sign in: http://localhost:3000/login');
+    expect(last().html).toContain('href="http://localhost:3000/login"');
+
+    const other = await ask('Nope Shop', 'nope@example.com');
+    await http.post(`/api/v1/platform/requests/${other.body.id}/reject`).set(adminT).send({ reason: 'We could not reach you on <that> number.' }).expect(201);
+    expect(last()).toMatchObject({ to: 'nope@example.com', subject: 'About your Floatly request for Nope Shop' });
+    expect(last().text).toContain('The reason: We could not reach you on <that> number.');
+    expect(last().html).toContain('We could not reach you on &#60;that&#62; number.');
+
+    const login = await http.post('/api/v1/auth/login').send({ email: OWNER, password: 'password123' }).expect(200);
+    ownerT = auth(login.body.accessToken);
+    tenantId = login.body.tenant.id;
+    storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+  });
+
+  it('sends the owners a receipt, and tells them when the business is suspended or opened again', async () => {
+    await http.post(`/api/v1/platform/businesses/${tenantId}/payments`).set(adminT).send({ amount: '25', method: 'EcoCash', reference: 'MP123' }).expect(201);
+    expect(last().to).toBe(OWNER);
+    expect(last().subject).toMatch(/^Payment received for Mail Shop: \w{3} 25/);
+    expect(last().text).toContain('(EcoCash, reference MP123). Thank you.');
+
+    const S = `/api/v1/platform/businesses/${tenantId}/subscription`;
+    await http.patch(S).set(adminT).send({ status: 'suspended' }).expect(200);
+    expect(last()).toMatchObject({ to: OWNER, subject: 'Mail Shop is suspended on Floatly' });
+    const n = mail.sent.length;
+    await http.patch(S).set(adminT).send({ status: 'suspended' }).expect(200);
+    expect(mail.sent).toHaveLength(n); // no change, no email
+    await http.patch(S).set(adminT).send({ status: 'active' }).expect(200);
+    expect(last()).toMatchObject({ to: OWNER, subject: 'Mail Shop is open again on Floatly' });
+  });
+
+  it('tells people about their password, their lockout and their access, and the owners about admins and tills', async () => {
+    await http.post('/api/v1/auth/change-password').set(ownerT).send({ currentPassword: 'password123', newPassword: 'password123' }).expect(200);
+    expect(last()).toMatchObject({ to: OWNER, subject: 'Your Floatly password was changed' });
+
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'mail.manager@example.com', fullName: 'Tatenda Moyo', password: 'password123', role: 'manager' }).expect(201);
+    expect(last()).toMatchObject({ to: 'mail.manager@example.com', subject: "You've been added to Mail Shop on Floatly" });
+    expect(last().text).toContain('Chipo Banda added you to Mail Shop as a manager.');
+    expect(last().text).toContain('and the password Chipo Banda gave you');
+
+    let n = mail.sent.length;
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'mail.admin@example.com', fullName: 'Rudo Dube', password: 'password123', role: 'admin' }).expect(201);
+    expect(newSince(n).map((m) => [m.to, m.subject])).toEqual([
+      ['mail.admin@example.com', "You've been added to Mail Shop on Floatly"],
+      [OWNER, 'Rudo Dube is now an admin of Mail Shop'],
+    ]);
+
+    const manager = (await http.get('/api/v1/staff').set(ownerT)).body.find((s: any) => s.email === 'mail.manager@example.com');
+    n = mail.sent.length;
+    await http.patch(`/api/v1/staff/${manager.id}`).set(ownerT).send({ storeIds: [storeId] }).expect(200);
+    expect(mail.sent).toHaveLength(n); // nothing serious
+    await http.patch(`/api/v1/staff/${manager.id}`).set(ownerT).send({ role: 'admin' }).expect(200);
+    expect(last()).toMatchObject({ to: OWNER, subject: 'Tatenda Moyo is now an admin of Mail Shop' });
+    expect(last().text).toContain('Chipo Banda made Tatenda Moyo (mail.manager@example.com) an admin of Mail Shop.');
+
+    // Locked by wrong passwords: one email, and only one that day however often it happens.
+    const lockedEmails = () => mail.sent.filter((m) => m.to === 'mail.manager@example.com' && m.subject === 'Your Floatly login was locked');
+    for (let i = 0; i < 5; i++) await http.post('/api/v1/auth/login').send({ email: 'mail.manager@example.com', password: 'wrong-password' });
+    expect(lockedEmails()).toHaveLength(1);
+    expect(lockedEmails()[0].text).toContain('5 times in a row, so the login is locked for 15 minutes.');
+    const db = ownerDb();
+    try {
+      await db.query(`UPDATE users SET locked_until = now() - interval '1 second' WHERE email = 'mail.manager@example.com'`);
+    } finally {
+      await db.end();
+    }
+    for (let i = 0; i < 5; i++) await http.post('/api/v1/auth/login').send({ email: 'mail.manager@example.com', password: 'wrong-password' });
+    expect(lockedEmails()).toHaveLength(1);
+
+    const deviceId = (await http.post('/api/v1/devices').set(ownerT).send({ storeId, name: 'Front till', code: 'M01' }).expect(201)).body.id;
+    await http.post(`/api/v1/devices/${deviceId}/token`).set(ownerT).expect(201);
+    expect(last()).toMatchObject({ to: OWNER, subject: 'A till was set up for Mail Shop: M01' });
+    expect(last().text).toContain('Chipo Banda set up a device as till M01 (Front till) at Main Store.');
+  });
+
+  it('tells the owners when a live ZIMRA till has a problem, or leaves a fiscal day open too long', async () => {
+    await http
+      .post('/api/v1/staff')
+      .set(ownerT)
+      .send({ email: 'mail.cashier@example.com', fullName: 'Mail Cashier', password: 'password123', role: 'cashier', pin: '1357', storeIds: [storeId] })
+      .expect(201);
+    const pair = async (code: string) => {
+      const id = (await http.post('/api/v1/devices').set(ownerT).send({ storeId, name: `Till ${code}`, code }).expect(201)).body.id;
+      const deviceToken = (await http.post(`/api/v1/devices/${id}/token`).set(ownerT).expect(201)).body.token;
+      return auth((await http.post('/api/v1/auth/till').send({ deviceToken, pin: '1357' }).expect(200)).body.accessToken);
+    };
+    const live = await pair('Z01');
+    const test = await pair('Z02');
+    const report = (t: Record<string, string>, fiscalDeviceId: number, state: object) =>
+      http
+        .put('/api/v1/till/fiscal-device')
+        .set(t)
+        .send({ fiscalDeviceId, serialNo: `S${fiscalDeviceId}`, state: { environment: 'live', unsent: 0, dayStatus: 'FiscalDayOpened', dayNo: 4, dayOpenedAt: new Date().toISOString(), ...state } })
+        .expect(200);
+    const zimra = () => mail.sent.filter((m) => m.to === OWNER && m.subject.includes('ZIMRA'));
+
+    await report(live, 7001, {});
+    expect(zimra()).toHaveLength(0);
+    await report(test, 7002, { environment: 'test', lastError: 'RCPT020: Invalid signature' });
+    expect(zimra()).toHaveLength(0); // ZIMRA's test server: no alarm
+    await report(live, 7001, { unsent: 3, lastError: 'RCPT020: Invalid signature' });
+    expect(zimra()).toHaveLength(1);
+    expect(zimra()[0].subject).toBe('ZIMRA problem on till Z01 at Mail Shop');
+    expect(zimra()[0].text).toContain('Till Z01 (Till Z01) at Main Store reports a problem with ZIMRA fiscalisation:\n\nRCPT020: Invalid signature');
+    await report(live, 7001, { unsent: 3, lastError: 'DEV02: Device certificate expired' });
+    expect(zimra()).toHaveLength(1); // at most one a day per till
+
+    const { DailyChecksService } = await import('../src/notifications/daily-checks.js');
+    const checks = app.get(DailyChecksService);
+    await checks.run();
+    expect(zimra()).toHaveLength(1); // the day was opened just now
+    await report(live, 7001, { unsent: 3, lastError: 'DEV02: Device certificate expired', dayOpenedAt: new Date(Date.now() - 30 * 3600_000).toISOString() });
+    await http.get('/api/v1/cron/daily').expect(200);
+    expect(zimra()).toHaveLength(2);
+    expect(zimra()[1].subject).toBe('Close the ZIMRA fiscal day on till Z01');
+    expect(zimra()[1].text).toContain('Fiscal day 4 on till Z01 (Till Z01) at Main Store has been open since');
+    expect(zimra()[1].text).toContain('End of day (Z report)');
+    await checks.run();
+    expect(zimra()).toHaveLength(2); // once per fiscal day
+  });
+
+  it('reminds the owners before the subscription ends, when it has ended, and when the business is locked, once each', async () => {
+    const { GRACE_DAYS } = await import('../src/common/auth-context.js');
+    const { DailyChecksService } = await import('../src/notifications/daily-checks.js');
+    const checks = app.get(DailyChecksService);
+    const S = `/api/v1/platform/businesses/${tenantId}/subscription`;
+    const reminders = () => mail.sent.filter((m) => m.to === OWNER && /subscription|locked/.test(m.subject));
+
+    await http.patch(S).set(adminT).send({ currentPeriodEnd: daysFromToday(3) }).expect(200);
+    await checks.run();
+    await checks.run();
+    expect(reminders().map((m) => m.subject)).toEqual([expect.stringMatching(/^Mail Shop: your Floatly subscription ends on \w+day,? \d{1,2} \w+ \d{4}$/)]);
+    expect(reminders()[0].text).toContain(`you'll have ${GRACE_DAYS} more days before Mail Shop is locked`);
+
+    await http.patch(S).set(adminT).send({ currentPeriodEnd: daysFromToday(-2) }).expect(200);
+    await checks.run();
+    expect(reminders().at(-1)!.subject).toBe('Mail Shop: your Floatly subscription has ended');
+    expect(reminders().at(-1)!.text).toContain('You can keep working until');
+
+    await http.patch(S).set(adminT).send({ currentPeriodEnd: daysFromToday(-(GRACE_DAYS + 1)) }).expect(200);
+    await checks.run();
+    await checks.run();
+    expect(reminders().at(-1)!.subject).toBe('Mail Shop is locked: renew your Floatly subscription');
+    expect(reminders()).toHaveLength(3);
+    await http.patch(S).set(adminT).send({ currentPeriodEnd: daysFromToday(30) }).expect(200);
+  });
+
+  it('runs the daily checks only for Vercel Cron when CRON_SECRET is set', async () => {
+    process.env.CRON_SECRET = 'cron-secret-for-tests';
+    try {
+      await http.get('/api/v1/cron/daily').expect(401);
+      await http.get('/api/v1/cron/daily').set('Authorization', 'Bearer wrong').expect(401);
+      const ok = await http.get('/api/v1/cron/daily').set('Authorization', 'Bearer cron-secret-for-tests').expect(200);
+      expect(ok.body).toMatchObject({ subscriptions: expect.any(Number), fiscalDays: expect.any(Number) });
+    } finally {
+      delete process.env.CRON_SECRET;
+    }
+  });
+});

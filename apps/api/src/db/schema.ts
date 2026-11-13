@@ -283,6 +283,16 @@ export const passwordResets = pgTable(
   (t) => [index('password_resets_user_idx').on(t.userId)],
 );
 
+/**
+ * Emails that must go only once (a reminder for one subscription period, a ZIMRA warning
+ * for one fiscal day…), by a key naming what they were about. No tenant policy: the key
+ * holds the ids, and nothing else is kept.
+ */
+export const sentEmails = pgTable('sent_emails', {
+  key: text('key').primaryKey(),
+  sentAt: timestamp('sent_at', { withTimezone: true }).notNull().defaultNow(),
+});
+
 export const stores = pgTable(
   'stores',
   {

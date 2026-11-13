@@ -28,6 +28,7 @@ import {
   ROLES,
   SIGNED_OUT,
 } from './auth-context.js';
+import { EmailsService } from './emails.service.js';
 import { confirmPin } from './lockout.js';
 import { effectivePermissions, NOT_PERMITTED, type Permission, PERMISSIONS_META } from './permissions.js';
 
@@ -49,6 +50,7 @@ export class AuthGuard implements CanActivate {
     private readonly reflector: Reflector,
     private readonly jwt: JwtService,
     private readonly dbs: DbService,
+    private readonly emails: EmailsService,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -154,7 +156,7 @@ export class AuthGuard implements CanActivate {
       const [m] = await this.dbs.withTenant({ tenantId: payload.tid, userId: payload.sub }, (tx) =>
         tx.select({ pinHash: memberships.pinHash }).from(memberships).where(eq(memberships.id, membership.id)),
       );
-      await confirmPin(this.dbs.db, payload.sub, m.pinHash!, pin);
+      await confirmPin(this.dbs.db, payload.sub, m.pinHash!, pin, (id) => this.emails.accountLocked(id));
       auth.pinConfirmed = true;
     }
     request.auth = auth;
