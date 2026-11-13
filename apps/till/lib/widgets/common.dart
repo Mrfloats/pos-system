@@ -108,11 +108,15 @@ class AmountField extends StatelessWidget {
     this.onChanged,
     this.onSubmitted,
     this.decimals = 2,
+    this.hint,
   });
 
   final TextEditingController controller;
   final String? label;
   final String? prefix;
+
+  /// A line under the field, e.g. what leaving it empty means.
+  final String? hint;
   final bool autofocus;
   final int decimals;
   final ValueChanged<String>? onChanged;
@@ -126,7 +130,7 @@ class AmountField extends StatelessWidget {
       keyboardType: TextInputType.numberWithOptions(decimal: decimals > 0),
       inputFormatters: [FilteringTextInputFormatter.allow(RegExp(decimals > 0 ? '^\\d*\\.?\\d{0,$decimals}' : r'^\d*'))],
       style: tabular.copyWith(fontSize: 18, fontWeight: FontWeight.w600),
-      decoration: InputDecoration(labelText: label, prefixText: prefix == null ? null : '$prefix '),
+      decoration: InputDecoration(labelText: label, prefixText: prefix == null ? null : '$prefix ', helperText: hint, helperMaxLines: 2),
       onChanged: onChanged,
       onSubmitted: onSubmitted,
     );

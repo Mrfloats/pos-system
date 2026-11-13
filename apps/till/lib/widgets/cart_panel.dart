@@ -133,7 +133,7 @@ class CartPanel extends StatelessWidget {
   }
 }
 
-/// Retail or Wholesale prices (or any other price list) for the sale.
+/// The sale type: Retail or Wholesale prices (or any other price list) for the sale.
 class PriceListSwitch extends StatelessWidget {
   const PriceListSwitch({super.key});
 
@@ -141,20 +141,25 @@ class PriceListSwitch extends StatelessWidget {
   Widget build(BuildContext context) {
     final state = TillScope.of(context);
     final lists = state.catalog!.priceLists;
-    return SizedBox(
-      width: double.infinity,
-      child: SegmentedButton<String>(
-        segments: [
-          for (final l in lists)
-            ButtonSegment(
-              value: l.id,
-              label: Text('${l.name} prices', overflow: TextOverflow.ellipsis),
-            ),
-        ],
-        selected: {state.priceList?.id ?? lists.first.id},
-        showSelectedIcon: false,
-        onSelectionChanged: (s) => state.setPriceList(s.first),
-      ),
+    return Row(
+      children: [
+        Text('Sale type', style: TextStyle(fontSize: 13, fontWeight: FontWeight.w600, color: Theme.of(context).colorScheme.onSurfaceVariant)),
+        const SizedBox(width: 10),
+        Expanded(
+          child: SegmentedButton<String>(
+            segments: [
+              for (final l in lists)
+                ButtonSegment(
+                  value: l.id,
+                  label: Text(l.name, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            selected: {state.priceList?.id ?? lists.first.id},
+            showSelectedIcon: false,
+            onSelectionChanged: (s) => state.setPriceList(s.first),
+          ),
+        ),
+      ],
     );
   }
 }

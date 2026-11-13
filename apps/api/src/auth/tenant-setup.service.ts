@@ -53,10 +53,10 @@ export class TenantSetupService {
       { tenantId, name: 'Litre', abbreviation: 'l', allowsDecimal: true },
     ]);
 
+    // Shops can sell at retail and wholesale prices; an item without a wholesale
+    // price sells at its retail price on the Wholesale list. Restaurants have one price.
     const lists = [{ tenantId, name: 'Retail', currencyCode: opts.baseCurrency, isDefault: true }];
-    if (opts.businessType === 'wholesale' || opts.businessType === 'mixed') {
-      lists.push({ tenantId, name: 'Wholesale', currencyCode: opts.baseCurrency, isDefault: false });
-    }
+    if (opts.businessType !== 'restaurant') lists.push({ tenantId, name: 'Wholesale', currencyCode: opts.baseCurrency, isDefault: false });
     await tx.insert(priceLists).values(lists);
 
     await tx.insert(accounts).values(DEFAULT_CHART.map((a) => ({ ...a, tenantId, isBank: a.isBank ?? false })));

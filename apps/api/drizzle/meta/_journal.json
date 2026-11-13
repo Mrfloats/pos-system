@@ -148,6 +148,13 @@
       "when": 1794486436612,
       "tag": "0020_fiscal",
       "breakpoints": true
+    },
+    {
+      "idx": 21,
+      "version": "7",
+      "when": 1794553004321,
+      "tag": "0021_wholesale_for_every_business",
+      "breakpoints": true
     }
   ]
 }

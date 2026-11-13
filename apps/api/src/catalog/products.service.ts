@@ -240,11 +240,24 @@ export class ProductsService {
       found(v, 'Item');
       const changes: Partial<typeof productVariants.$inferInsert> = {};
       const priceChanged = dto.price !== undefined && Number(dto.price) !== Number(v.price);
-      if (priceChanged) {
+      // Prices on other lists (Wholesale…) that would change, from 1 unit.
+      await assertOwned(tx, priceLists, (dto.listPrices ?? []).map((l) => l.priceListId), 'price list');
+      const current = dto.listPrices?.length
+        ? await tx
+            .select({ priceListId: priceListItems.priceListId, price: priceListItems.price, name: priceLists.name })
+            .from(priceListItems)
+            .innerJoin(priceLists, eq(priceLists.id, priceListItems.priceListId))
+            .where(and(eq(priceListItems.variantId, id), isNull(priceListItems.packagingId), eq(priceListItems.minQuantity, '1')))
+        : [];
+      const listChanges = (dto.listPrices ?? []).filter((lp) => {
+        const was = current.find((c) => c.priceListId === lp.priceListId)?.price ?? null;
+        return (was === null ? null : Number(was)) !== (lp.price === null || lp.price === undefined ? null : Number(lp.price));
+      });
+      if (priceChanged || listChanges.length) {
         assertCan(ctx, 'products.price');
         assertPinConfirmed(ctx);
-        changes.price = dto.price;
       }
+      if (priceChanged) changes.price = dto.price;
       if (dto.costPrice !== undefined) changes.costPrice = dto.costPrice;
       if (dto.reorderLevel !== undefined) changes.reorderLevel = dto.reorderLevel;
       if (Object.keys(changes).length) {
@@ -254,6 +267,24 @@ export class ProductsService {
         if (priceChanged) {
           await this.audit.log(tx, ctx, 'price_change', 'Product', v.productId, { variants: [v.name] }, { old: { [id]: v.price }, new: { [id]: dto.price } });
         }
+      }
+      if (listChanges.length) {
+        const names = new Map(
+          (await tx.select({ id: priceLists.id, name: priceLists.name }).from(priceLists).where(inArray(priceLists.id, listChanges.map((l) => l.priceListId)))).map((l) => [l.id, l.name]),
+        );
+        for (const lp of listChanges) await this.setListPrice(tx, ctx, id, lp.priceListId, lp.price ?? null);
+        await this.audit.log(
+          tx,
+          ctx,
+          'price_change',
+          'Product',
+          v.productId,
+          { variants: [v.name], priceLists: listChanges.map((l) => names.get(l.priceListId)) },
+          {
+            old: Object.fromEntries(listChanges.map((l) => [names.get(l.priceListId)!, current.find((c) => c.priceListId === l.priceListId)?.price ?? null])),
+            new: Object.fromEntries(listChanges.map((l) => [names.get(l.priceListId)!, l.price ?? null])),
+          },
+        );
       }
       return this.full(tx, v.productId);
     });
@@ -354,6 +385,21 @@ export class ProductsService {
       .orderBy(asc(priceListItems.minQuantity));
   }
 
+  /** An item's price from 1 unit on a price list (Wholesale…); null takes it off the list, so it sells at the normal price there. */
+  private async setListPrice(tx: Tx, ctx: AuthContext, variantId: string, priceListId: string, price: string | null) {
+    await tx
+      .delete(priceListItems)
+      .where(
+        and(
+          eq(priceListItems.priceListId, priceListId),
+          eq(priceListItems.variantId, variantId),
+          isNull(priceListItems.packagingId),
+          eq(priceListItems.minQuantity, '1'),
+        ),
+      );
+    if (price !== null) await tx.insert(priceListItems).values({ tenantId: ctx.tenantId, priceListId, variantId, minQuantity: '1', price });
+  }
+
   private async checkReferences(tx: Tx, dto: UpdateProductDto) {
     await assertOwned(tx, categories, [dto.categoryId], 'category');
     await assertOwned(tx, taxRates, [dto.taxRateId], 'tax rate');
@@ -446,21 +492,7 @@ export class ProductsService {
         }
       }
       // The price from 1 unit on each list sent; quantity breaks set on the price list stay.
-      for (const lp of v.listPrices ?? []) {
-        await tx
-          .delete(priceListItems)
-          .where(
-            and(
-              eq(priceListItems.priceListId, lp.priceListId),
-              eq(priceListItems.variantId, variantId),
-              isNull(priceListItems.packagingId),
-              eq(priceListItems.minQuantity, '1'),
-            ),
-          );
-        if (lp.price !== null && lp.price !== undefined) {
-          await tx.insert(priceListItems).values({ tenantId: ctx.tenantId, priceListId: lp.priceListId, variantId, minQuantity: '1', price: lp.price });
-        }
-      }
+      for (const lp of v.listPrices ?? []) await this.setListPrice(tx, ctx, variantId, lp.priceListId, lp.price ?? null);
       if (v.components) {
         if (v.components.some((c) => c.componentVariantId === variantId)) {
           throw new BadRequestException('An item cannot contain itself');

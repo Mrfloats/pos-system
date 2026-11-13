@@ -286,24 +286,48 @@ class _ItemScreenState extends State<ItemScreen> {
     }
   }
 
+  /// The item's prices on other lists (Wholesale…): each with its price from 1 unit, or null (sold at the retail price).
+  List<Map<String, dynamic>> get _lists => [for (final l in _item?['listPrices'] as List? ?? const []) (l as Map).cast<String, dynamic>()];
+
   Future<void> _changePrice() async {
     final admin = AdminScope.read(context);
     final item = _item!;
-    final price = await showDialog<String>(context: context, builder: (_) => _PriceDialog(item: item, symbol: admin.symbol));
-    final cents = price == null ? null : tryParseFixed(price, 2);
-    if (cents == null || !mounted) return;
-    if (cents == toCents(item['price'])) return;
+    final lists = _lists;
+    final next = await showDialog<_Prices>(context: context, builder: (_) => _PriceDialog(item: item, lists: lists, symbol: admin.symbol));
+    if (next == null || !mounted) return;
+    String money(int? cents) => cents == null ? 'same as retail' : formatMoney(cents, admin.symbol);
+    final body = <String, dynamic>{};
+    final changes = <String>[];
+    final retail = toCents(item['price']);
+    if (next.retail != retail) {
+      body['price'] = fromCents(next.retail);
+      changes.add('${lists.isEmpty ? '' : 'Retail: '}${money(retail)} → ${money(next.retail)}');
+    }
+    final listChanges = [
+      for (final l in lists)
+        if ((l['price'] == null ? null : toCents(l['price'])) != next.lists[l['priceListId']]) l,
+    ];
+    if (listChanges.isNotEmpty) {
+      body['listPrices'] = [
+        for (final l in listChanges)
+          {'priceListId': l['priceListId'], 'price': next.lists[l['priceListId']] == null ? null : fromCents(next.lists[l['priceListId']]!)},
+      ];
+      for (final l in listChanges) {
+        changes.add('${l['name']}: ${money(l['price'] == null ? null : toCents(l['price']))} → ${money(next.lists[l['priceListId']])}');
+      }
+    }
+    if (body.isEmpty) return;
     final done = await confirmWithPin<bool>(
       context,
-      title: 'Confirm the new price',
-      message: '${itemName(item)}: ${admin.money(item['price'])} → ${formatMoney(cents, admin.symbol)}.',
+      title: changes.length == 1 ? 'Confirm the new price' : 'Confirm the new prices',
+      message: lists.isEmpty ? '${itemName(item)}: ${changes.single}.' : '${itemName(item)}\n${changes.join('\n')}',
       action: (pin) async {
-        await admin.call((api) => api.patch('/products/variants/${widget.variantId}', {'price': fromCents(cents)}), pin: pin);
+        await admin.call((api) => api.patch('/products/variants/${widget.variantId}', body), pin: pin);
         return true;
       },
     );
     if (done == true && mounted) {
-      showMessage(context, 'Price changed to ${formatMoney(cents, admin.symbol)}');
+      showMessage(context, changes.length == 1 && lists.isEmpty ? 'Price changed to ${money(next.retail)}' : 'Prices changed');
       _load();
     }
   }
@@ -385,7 +409,7 @@ class _ItemScreenState extends State<ItemScreen> {
                             children: [
                               ListTile(
                                 leading: const Icon(Icons.sell_outlined),
-                                title: const Text('Selling price'),
+                                title: Text(_lists.isEmpty ? 'Selling price' : 'Retail price'),
                                 trailing: Row(
                                   mainAxisSize: MainAxisSize.min,
                                   children: [
@@ -395,6 +419,23 @@ class _ItemScreenState extends State<ItemScreen> {
                                 ),
                                 onTap: session.can('products.price') ? _changePrice : null,
                               ),
+                              for (final l in _lists) ...[
+                                const Divider(height: 1, indent: 56),
+                                ListTile(
+                                  leading: const Icon(Icons.local_shipping_outlined),
+                                  title: Text('${l['name']} price'),
+                                  trailing: Row(
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
+                                      l['price'] == null
+                                          ? Text('Same as retail', style: TextStyle(color: scheme.onSurfaceVariant))
+                                          : Text(admin.money(l['price']), style: tabular.copyWith(fontWeight: FontWeight.w700, fontSize: 16)),
+                                      if (session.can('products.price')) const Icon(Icons.chevron_right),
+                                    ],
+                                  ),
+                                  onTap: session.can('products.price') ? _changePrice : null,
+                                ),
+                              ],
                               const Divider(height: 1, indent: 56),
                               ListTile(
                                 leading: const Icon(Icons.tune),
@@ -676,11 +717,15 @@ class _StockMoveSheetState extends State<StockMoveSheet> {
   }
 }
 
-/// Step one of a price change: the new price. (The PIN comes next.)
+/// New prices: retail, and on each other list (null there: sold at the retail price).
+typedef _Prices = ({int retail, Map<String, int?> lists});
+
+/// Step one of a price change: the new retail and wholesale prices. (The PIN comes next.)
 class _PriceDialog extends StatefulWidget {
-  const _PriceDialog({required this.item, required this.symbol});
+  const _PriceDialog({required this.item, required this.lists, required this.symbol});
 
   final Map<String, dynamic> item;
+  final List<Map<String, dynamic>> lists;
   final String symbol;
 
   @override
@@ -688,31 +733,72 @@ class _PriceDialog extends StatefulWidget {
 }
 
 class _PriceDialogState extends State<_PriceDialog> {
-  late final _text = TextEditingController(text: fromCents(toCents(widget.item['price'])));
+  late final _retail = TextEditingController(text: fromCents(toCents(widget.item['price'])));
+  late final _lists = {
+    for (final l in widget.lists) l['priceListId'] as String: TextEditingController(text: l['price'] == null ? '' : fromCents(toCents(l['price']))),
+  };
+  String? _error;
 
   @override
   void dispose() {
-    _text.dispose();
+    _retail.dispose();
+    for (final c in _lists.values) {
+      c.dispose();
+    }
     super.dispose();
   }
 
+  void _next() {
+    final retail = tryParseFixed(_retail.text, 2);
+    if (retail == null) {
+      setState(() => _error = 'Enter the retail price');
+      return;
+    }
+    final lists = <String, int?>{};
+    for (final e in _lists.entries) {
+      final text = e.value.text.trim();
+      lists[e.key] = text.isEmpty ? null : tryParseFixed(text, 2);
+    }
+    Navigator.pop<_Prices>(context, (retail: retail, lists: lists));
+  }
+
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('Selling price'),
-    content: Column(
-      mainAxisSize: MainAxisSize.min,
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Text('${itemName(widget.item)}, in every store without a price of its own.'),
-        const SizedBox(height: 12),
-        AmountField(controller: _text, label: 'New price', prefix: widget.symbol, autofocus: true, onSubmitted: (v) => Navigator.pop(context, v)),
+  Widget build(BuildContext context) {
+    final wholesale = widget.lists.isNotEmpty;
+    return AlertDialog(
+      title: Text(wholesale ? 'Prices' : 'Selling price'),
+      scrollable: true,
+      content: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('${itemName(widget.item)}, in every store without a price of its own.'),
+          const SizedBox(height: 12),
+          AmountField(
+            controller: _retail,
+            label: wholesale ? 'Retail price' : 'New price',
+            prefix: widget.symbol,
+            autofocus: true,
+            onSubmitted: wholesale ? null : (_) => _next(),
+          ),
+          for (final l in widget.lists) ...[
+            const SizedBox(height: 12),
+            AmountField(
+              controller: _lists[l['priceListId']]!,
+              label: '${l['name']} price',
+              prefix: widget.symbol,
+              hint: 'Empty: sold at the retail price',
+            ),
+          ],
+          if (_error != null) ...[const SizedBox(height: 8), Text(_error!, style: TextStyle(color: Theme.of(context).colorScheme.error))],
+        ],
+      ),
+      actions: [
+        TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+        FilledButton(onPressed: _next, child: const Text('Next')),
       ],
-    ),
-    actions: [
-      TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-      FilledButton(onPressed: () => Navigator.pop(context, _text.text), child: const Text('Next')),
-    ],
-  );
+    );
+  }
 }
 
 /// Cost price and reorder level: no PIN needed, they don't change what customers pay.
@@ -812,6 +898,10 @@ class _AddProductScreenState extends State<AddProductScreen> {
   final _reorder = TextEditingController();
   final _opening = TextEditingController();
   List<Map> _categories = const [];
+
+  /// Wholesale (and any other list besides Retail), each with its price field.
+  List<Map> _lists = const [];
+  final _listPrices = <String, TextEditingController>{};
   String? _categoryId;
   String? _storeId;
   bool _busy = false;
@@ -825,11 +915,20 @@ class _AddProductScreenState extends State<AddProductScreen> {
     admin.fetch('/categories', query: {'active': 'true'}).then((list) {
       if (mounted) setState(() => _categories = (list as List).cast<Map>());
     }, onError: (_) {});
+    admin.fetch('/price-lists').then((list) {
+      if (!mounted) return;
+      setState(() {
+        _lists = [for (final l in (list as List).cast<Map>()) if (l['active'] != false && l['isDefault'] != true) l];
+        for (final l in _lists) {
+          _listPrices.putIfAbsent(l['id'] as String, TextEditingController.new);
+        }
+      });
+    }, onError: (_) {});
   }
 
   @override
   void dispose() {
-    for (final c in [_name, _price, _cost, _barcode, _sku, _reorder, _opening]) {
+    for (final c in [_name, _price, _cost, _barcode, _sku, _reorder, _opening, ..._listPrices.values]) {
       c.dispose();
     }
     super.dispose();
@@ -846,10 +945,17 @@ class _AddProductScreenState extends State<AddProductScreen> {
     final cost = _cost.text.trim().isEmpty ? null : tryParseFixed(_cost.text, 2);
     final reorder = _reorder.text.trim().isEmpty ? null : tryParseFixed(_reorder.text, 3);
     final opening = _opening.text.trim().isEmpty ? 0 : tryParseFixed(_opening.text, 3) ?? -1;
+    // Prices on other lists (Wholesale…); empty sells at the retail price.
+    final listPrices = [
+      for (final l in _lists)
+        if (_listPrices[l['id']]!.text.trim().isNotEmpty) {'priceListId': l['id'], 'price': tryParseFixed(_listPrices[l['id']]!.text, 2)},
+    ];
     final error = _name.text.trim().isEmpty
         ? 'Give it a name'
         : price == null
-        ? 'Enter the selling price'
+        ? 'Enter the ${_lists.isEmpty ? 'selling' : 'retail'} price'
+        : listPrices.any((l) => l['price'] == null)
+        ? 'Check the ${_lists.first['name'].toString().toLowerCase()} price'
         : opening < 0
         ? 'Opening stock should be a number'
         : opening > 0 && _storeId == null
@@ -871,6 +977,7 @@ class _AddProductScreenState extends State<AddProductScreen> {
           'variants': [
             {
               'price': fromCents(price!),
+              if (listPrices.isNotEmpty) 'listPrices': [for (final l in listPrices) {'priceListId': l['priceListId'], 'price': fromCents(l['price'] as int)}],
               if (cost != null) 'costPrice': fromCents(cost),
               if (_barcode.text.trim().isNotEmpty) 'barcode': _barcode.text.trim(),
               if (_sku.text.trim().isNotEmpty) 'sku': _sku.text.trim(),
@@ -921,13 +1028,38 @@ class _AddProductScreenState extends State<AddProductScreen> {
             children: [
               TextField(controller: _name, autofocus: widget.barcode == null, textCapitalization: TextCapitalization.sentences, decoration: const InputDecoration(labelText: 'Name')),
               gap,
-              Row(
-                children: [
-                  Expanded(child: AmountField(controller: _price, label: 'Selling price', prefix: admin.symbol)),
-                  const SizedBox(width: 12),
-                  Expanded(child: AmountField(controller: _cost, label: 'Cost (optional)', prefix: admin.symbol)),
+              if (_lists.isEmpty)
+                Row(
+                  children: [
+                    Expanded(child: AmountField(controller: _price, label: 'Selling price', prefix: admin.symbol)),
+                    const SizedBox(width: 12),
+                    Expanded(child: AmountField(controller: _cost, label: 'Cost (optional)', prefix: admin.symbol)),
+                  ],
+                )
+              else ...[
+                // Retail and wholesale side by side, as they're set together.
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(child: AmountField(controller: _price, label: 'Retail price', prefix: admin.symbol)),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: AmountField(
+                        controller: _listPrices[_lists.first['id']]!,
+                        label: '${_lists.first['name']} price',
+                        prefix: admin.symbol,
+                        hint: 'Empty: the retail price',
+                      ),
+                    ),
+                  ],
+                ),
+                for (final l in _lists.skip(1)) ...[
+                  gap,
+                  AmountField(controller: _listPrices[l['id']]!, label: '${l['name']} price', prefix: admin.symbol, hint: 'Empty: the retail price'),
                 ],
-              ),
+                gap,
+                AmountField(controller: _cost, label: 'Cost (optional)', prefix: admin.symbol),
+              ],
               gap,
               TextField(
                 controller: _barcode,

@@ -224,6 +224,14 @@ export class InventoryService {
         WHERE s.active
         GROUP BY s.id ORDER BY s.name`);
       const perStore = (res.rows as any[]).map((r) => ({ storeId: r.id as string, storeName: r.name as string, storeCode: r.code as string, storeType: r.type as string, onHand: r.on_hand as string }));
+      // Its price on each other price list (Wholesale…), from 1 unit; null sells it at the normal price.
+      const listRes = await tx.execute(sql`
+        SELECT l.id, l.name, i.price::text AS price
+        FROM price_lists l
+        LEFT JOIN price_list_items i ON i.price_list_id = l.id AND i.variant_id = ${variantId} AND i.packaging_id IS NULL AND i.min_quantity = 1
+        WHERE l.active AND NOT l.is_default
+        ORDER BY l.name`);
+      const listPrices = (listRes.rows as any[]).map((r) => ({ priceListId: r.id as string, name: r.name as string, price: (r.price as string | null) ?? null }));
       const v = row.variant;
       return {
         variantId: v.id,
@@ -234,6 +242,7 @@ export class InventoryService {
         sku: v.sku,
         barcode: v.barcode,
         price: v.price,
+        listPrices,
         costPrice: v.costPrice,
         reorderLevel: v.reorderLevel,
         trackStock: row.trackStock,

@@ -61,6 +61,12 @@ class FakeServer {
   /// Products added with POST /products.
   final added = <Map<String, dynamic>>[];
 
+  /// Each item's wholesale price (from 1 unit); missing or null: sold at the retail price.
+  final wholesale = <String, String?>{'v-rice': '9.00'};
+
+  /// Every PATCH /products/variants/:id body.
+  final patched = <Map<String, dynamic>>[];
+
   String _onHand(Map<String, dynamic> item, String? store) {
     final stock = (item['stock'] as Map).cast<String, int>();
     final milli = store == null ? stock.values.fold(0, (a, b) => a + b) : stock[store] ?? 0;
@@ -93,6 +99,9 @@ class FakeServer {
       final i = items[id]!;
       return _json({
         ..._level(id, null),
+        'listPrices': [
+          {'priceListId': 'pl-wholesale', 'name': 'Wholesale', 'price': wholesale[id]},
+        ],
         'categoryName': 'Groceries',
         'trackStock': true,
         'active': true,
@@ -139,7 +148,8 @@ class FakeServer {
     if (path.startsWith('/products/variants/') && req.method == 'PATCH') {
       final id = path.substring('/products/variants/'.length);
       final item = items[id]!;
-      if (body.containsKey('price') && body['price'] != item['price']) {
+      final lists = (body['listPrices'] as List? ?? const []).cast<Map>();
+      if ((body.containsKey('price') && body['price'] != item['price']) || lists.any((l) => l['price'] != wholesale[id])) {
         final given = req.headers['X-Floatly-Pin'];
         if (given == null) return _json({'statusCode': 403, 'code': 'pin_required', 'message': 'Enter your PIN to confirm this'}, 403);
         if (given != pin) return _json({'statusCode': 403, 'code': 'wrong_pin', 'message': 'Wrong PIN'}, 403);
@@ -147,6 +157,10 @@ class FakeServer {
       for (final k in ['price', 'costPrice', 'reorderLevel']) {
         if (body.containsKey(k)) item[k] = body[k];
       }
+      for (final l in lists) {
+        wholesale[id] = l['price'] as String?;
+      }
+      patched.add(body);
       return _json({'id': item['productId']});
     }
     if (path == '/products' && req.method == 'POST') {
@@ -164,6 +178,9 @@ class FakeServer {
         'reorderLevel': v['reorderLevel'],
         'stock': <String, int>{},
       };
+      for (final l in (v['listPrices'] as List? ?? const []).cast<Map>()) {
+        wholesale[id] = l['price'] as String?;
+      }
       return _json({
         'id': 'p-new',
         'name': body['name'],
@@ -176,6 +193,12 @@ class FakeServer {
       return _json([
         {'id': 'c1', 'name': 'Groceries'},
         {'id': 'c2', 'name': 'Drinks'},
+      ]);
+    }
+    if (path == '/price-lists') {
+      return _json([
+        {'id': 'pl-retail', 'name': 'Retail', 'currencyCode': 'USD', 'isDefault': true, 'active': true},
+        {'id': 'pl-wholesale', 'name': 'Wholesale', 'currencyCode': 'USD', 'isDefault': false, 'active': true},
       ]);
     }
     if (path.startsWith('/products/barcode/')) {

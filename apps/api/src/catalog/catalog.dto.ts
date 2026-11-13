@@ -206,6 +206,8 @@ export class UpdateProductDto extends PartialType(CreateProductDto) {}
 /** Changes one item's prices or reorder level, leaving the rest of the product as it is. */
 export class UpdateVariantDto {
   @IsOptional() @ToDecimalString() @IsMoney() price?: string;
+  /** Its price from 1 unit on other price lists (Wholesale…); null sells it at the normal price there. */
+  @IsOptional() @IsArray() @ArrayMaxSize(20) @ValidateNested({ each: true }) @Type(() => ListPriceDto) listPrices?: ListPriceDto[];
   @IsOptional() @ToDecimalString() @IsMoney() costPrice?: string | null;
   @IsOptional() @ToDecimalString() @IsQuantity() reorderLevel?: string | null;
 }

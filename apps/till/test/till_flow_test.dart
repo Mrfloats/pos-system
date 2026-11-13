@@ -187,10 +187,11 @@ void main() {
     await tester.pumpAndSettle();
     expect(find.text(r'Charge $0.50'), findsOneWidget);
 
-    await tester.tap(find.text('Wholesale prices'));
+    expect(find.text('Sale type'), findsOneWidget);
+    await tester.tap(find.descendant(of: find.byType(SegmentedButton<String>), matching: find.text('Wholesale')));
     await tester.pumpAndSettle();
     expect(find.text(r'Charge $0.40'), findsOneWidget);
-    await tester.tap(find.text('Retail prices'));
+    await tester.tap(find.descendant(of: find.byType(SegmentedButton<String>), matching: find.text('Retail')));
     await tester.pumpAndSettle();
     expect(find.text(r'Charge $0.50'), findsOneWidget);
 

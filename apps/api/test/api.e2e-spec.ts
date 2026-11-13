@@ -1,6 +1,7 @@
 import type { INestApplication } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { hash } from '@node-rs/argon2';
+import { readFileSync } from 'node:fs';
 import { Pool } from 'pg';
 import { v7 as uuidv7 } from 'uuid';
 import request from 'supertest';
@@ -2705,5 +2706,95 @@ describe('ZIMRA fiscal receipts from the till', () => {
     const cleared = await http.put('/api/v1/till/fiscal-device').set(tillT).send({ fiscalDeviceId: null }).expect(200);
     expect(cleared.body).toMatchObject({ fiscalDeviceId: null, fiscalSerialNo: null, fiscalState: null });
     await http.put('/api/v1/till/fiscal-device').set(till2T).send({ fiscalDeviceId: 4021, serialNo: 'FLT-T02', state: { ...state, unsent: 0 } }).expect(200);
+  });
+});
+
+describe('retail and wholesale prices for every shop', () => {
+  let ownerT: Record<string, string>;
+  let managerT: Record<string, string>;
+  let cashierT: Record<string, string>;
+  let wholesaleId: string;
+  let flour: string;
+  let rice: string;
+  const pin = { 'X-Floatly-Pin': '3690' };
+
+  beforeAll(async () => {
+    ownerT = auth((await signup('Corner Shop', 'corner@example.com', 'retail')).accessToken);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'corner-m@example.com', fullName: 'Corner Manager', password: 'password123', role: 'manager', pin: '3690' }).expect(201);
+    await http.post('/api/v1/staff').set(ownerT).send({ email: 'corner-c@example.com', fullName: 'Corner Cashier', password: 'password123', role: 'cashier' }).expect(201);
+    managerT = auth((await http.post('/api/v1/auth/login').send({ email: 'corner-m@example.com', password: 'password123', session: 'mobile' }).expect(200)).body.accessToken);
+    cashierT = auth((await http.post('/api/v1/auth/login').send({ email: 'corner-c@example.com', password: 'password123' }).expect(200)).body.accessToken);
+  });
+
+  it('gives a retail shop a Wholesale price list too, but not a restaurant', async () => {
+    const lists = (await http.get('/api/v1/price-lists').set(ownerT).expect(200)).body;
+    expect(lists.map((l: any) => [l.name, l.isDefault]).sort()).toEqual([
+      ['Retail', true],
+      ['Wholesale', false],
+    ]);
+    wholesaleId = lists.find((l: any) => l.name === 'Wholesale').id;
+    const cafe = auth((await signup('One Price Cafe', 'oneprice@example.com', 'restaurant')).accessToken);
+    expect((await http.get('/api/v1/price-lists').set(cafe).expect(200)).body.map((l: any) => l.name)).toEqual(['Retail']);
+  });
+
+  it('adds a Wholesale list to shops that never had one, once', async () => {
+    const sql = readFileSync(new URL('../drizzle/0021_wholesale_for_every_business.sql', import.meta.url), 'utf8');
+    const old = auth((await signup('Old Shop', 'oldshop@example.com', 'retail')).accessToken);
+    const db = ownerDb();
+    try {
+      // As a shop signed up before every shop had one.
+      await db.query(`DELETE FROM price_lists WHERE name = 'Wholesale' AND tenant_id IN (SELECT id FROM tenants WHERE name = 'Old Shop')`);
+      expect((await http.get('/api/v1/price-lists').set(old)).body.map((l: any) => l.name)).toEqual(['Retail']);
+      await db.query(sql);
+      await db.query(sql);
+    } finally {
+      await db.end();
+    }
+    expect((await http.get('/api/v1/price-lists').set(old)).body.map((l: any) => l.name).sort()).toEqual(['Retail', 'Wholesale']);
+    expect((await http.get('/api/v1/price-lists').set(ownerT)).body).toHaveLength(2);
+    const cafe = auth((await http.post('/api/v1/auth/login').send({ email: 'oneprice@example.com', password: 'password123' })).body.accessToken);
+    expect((await http.get('/api/v1/price-lists').set(cafe)).body).toHaveLength(1);
+  });
+
+  it('takes a retail and a wholesale price when a product is added, and sells at either', async () => {
+    const p = await http
+      .post('/api/v1/products')
+      .set(ownerT)
+      .send({ name: '2KG Gloria Flour', variants: [{ price: '1.80', costPrice: '1.40', listPrices: [{ priceListId: wholesaleId, price: '1.65' }] }] })
+      .expect(201);
+    flour = p.body.variants[0].id;
+    rice = (await http.post('/api/v1/products').set(ownerT).send({ name: '2kg Rice', variants: [{ price: '2.00' }] }).expect(201)).body.variants[0].id;
+    const storeId = (await http.get('/api/v1/stores').set(ownerT)).body[0].id;
+    const preview = (priceListId?: string) =>
+      http.post('/api/v1/sales/preview').set(ownerT).send({ storeId, priceListId, lines: [{ variantId: flour, quantity: 1 }, { variantId: rice, quantity: 1 }] }).expect(200);
+    expect((await preview()).body.total).toBe('3.80');
+    // No wholesale price on the rice: it sells at its retail price.
+    expect((await preview(wholesaleId)).body.total).toBe('3.65');
+  });
+
+  it('shows and changes the wholesale price on the phone, with the PIN, in the audit trail', async () => {
+    const item = (await http.get(`/api/v1/inventory/items/${flour}`).set(managerT).expect(200)).body;
+    expect(item).toMatchObject({ price: '1.80', listPrices: [{ priceListId: wholesaleId, name: 'Wholesale', price: '1.65' }] });
+    const riceItem = (await http.get(`/api/v1/inventory/items/${rice}`).set(managerT).expect(200)).body;
+    expect(riceItem.listPrices).toEqual([{ priceListId: wholesaleId, name: 'Wholesale', price: null }]);
+
+    const change = { listPrices: [{ priceListId: wholesaleId, price: '1.60' }] };
+    expect((await http.patch(`/api/v1/products/variants/${flour}`).set(managerT).send(change).expect(403)).body.code).toBe('pin_required');
+    await http.patch(`/api/v1/products/variants/${flour}`).set(cashierT).set(pin).send(change).expect(403);
+    await http.patch(`/api/v1/products/variants/${flour}`).set(managerT).set(pin).send(change).expect(200);
+    expect((await http.get(`/api/v1/inventory/items/${flour}`).set(managerT)).body.listPrices[0].price).toBe('1.60');
+    // Sending the same price again changes nothing and needs no PIN.
+    await http.patch(`/api/v1/products/variants/${flour}`).set(managerT).send(change).expect(200);
+
+    const log = (await http.get('/api/v1/audit-logs').query({ action: 'price_change' }).set(ownerT).expect(200)).body;
+    expect(log).toHaveLength(1);
+    expect(log[0]).toMatchObject({ platform: 'mobile', oldValue: { Wholesale: '1.65' }, newValue: { Wholesale: '1.60' } });
+
+    // Cleared: it sells at its retail price on the Wholesale list.
+    await http.patch(`/api/v1/products/variants/${flour}`).set(managerT).set(pin).send({ listPrices: [{ priceListId: wholesaleId, price: null }] }).expect(200);
+    expect((await http.get(`/api/v1/inventory/items/${flour}`).set(managerT)).body.listPrices[0].price).toBeNull();
+    const other = auth((await http.post('/api/v1/auth/login').send({ email: 'oldshop@example.com', password: 'password123' })).body.accessToken);
+    const theirs = (await http.get('/api/v1/price-lists').set(other)).body.find((l: any) => l.name === 'Wholesale').id;
+    await http.patch(`/api/v1/products/variants/${flour}`).set(managerT).set(pin).send({ listPrices: [{ priceListId: theirs, price: '1.00' }] }).expect(400);
   });
 });

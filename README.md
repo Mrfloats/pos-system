@@ -15,7 +15,7 @@ Point of sale and backoffice for **retail shops, wholesalers and restaurants**.
 - **Staff and roles.** Owner, admin, manager, cashier, waiter, stock clerk and accountant. Each person can have a 4–6 digit till PIN and be limited to certain stores. One login can belong to several businesses and switch between them.
 - **Catalog for all three business types:**
   - Retail: products, variants, barcodes, SKUs, categories, tax per product, sold-by-weight.
-  - Wholesale: a wholesale price next to the retail price on each product and on each of its packs, packs (case of 24 with its own barcode and price), price lists with quantity breaks, customers and customer groups on wholesale prices, customer credit limits. Sales use the price list the cashier picks, or the customer's.
+  - Wholesale: every shop has Retail and Wholesale prices (restaurants have one price). A wholesale price sits next to the retail price on each product, in the backoffice and on the phone, and on each of its packs; left empty, the item sells at its retail price, packs (case of 24 with its own barcode and price), price lists with quantity breaks, customers and customer groups on wholesale prices, customer credit limits. Sales use the price list the cashier picks, or the customer's.
   - Restaurant: menu items, kitchen stations, choice groups (sides, extras), recipes that use up ingredient stock.
 - **Stock ledger.** Opening stock, goods received, adjustments, waste, transfers between stores and stock takes. Stock is never edited in place: every change is a new ledger row. The database refuses updates and deletes on the ledger, and retried requests are ignored using idempotency keys, ready for offline tills.
 - **Customers** with TIN and VAT number for ZIMRA fiscal tax invoices.
@@ -176,7 +176,7 @@ The code is in `apps/till/lib/fiscal/` (receipts, signing, day totals and QR in 
 npm run test:api
 ```
 
-The 146 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices, restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
+The 150 end-to-end tests run against a real PostgreSQL test database (`pos_test`) as the restricted role. They cover sign-up, login, validation, catalog, wholesale packs and prices (every shop has a Wholesale list), restaurant menus, the stock ledger, accounting (postings, VAT, exchange gains, closing periods, and the database-level ledger rules), roles and permissions (a cashier's token is refused by every admin endpoint), phone sessions, lockout and PIN confirmation, the audit trail, refund and void requests, the dashboard and notifications, people in several businesses, tenant isolation, the till app's PIN sign-in, offline catalog, synced sales, switching a till off, and sales of cases and dishes with choices, and ZIMRA fiscal receipts, results and till registrations.
 
 The till app has its own tests: `flutter test` in `apps/till` (see its README).
 

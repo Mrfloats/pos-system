@@ -29,7 +29,7 @@ void main() {
       expect(find.text('Cooking oil 2L'), findsNothing);
     });
 
-    testWidgets('shows an item by store, and changes its price only with the PIN', (tester) async {
+    testWidgets('shows an item by store, and changes its retail and wholesale prices only with the PIN', (tester) async {
       final (_, fake, _) = await openAdmin(tester);
       await goTo(tester, 'Inventory');
       await tapAndSettle(tester, find.text('Rice · 5kg'));
@@ -38,22 +38,55 @@ void main() {
       expect(find.text('Cost \$7.00 · reorder at 10'), findsOneWidget);
       expect(find.text('Depot'), findsOneWidget);
       expect(find.text('20'), findsOneWidget);
+      expect(find.text('Retail price'), findsOneWidget);
+      expect(find.text('Wholesale price'), findsOneWidget);
+      expect(find.text(r'$9.00'), findsOneWidget);
 
-      await tester.tap(find.text('Selling price'));
+      await tester.tap(find.text('Wholesale price'));
       await tester.pumpAndSettle();
-      await tester.enterText(field('New price'), '9.75');
+      expect(find.text('Prices'), findsOneWidget);
+      await tester.enterText(field('Retail price'), '9.75');
+      await tester.enterText(field('Wholesale price'), '8.80');
       await tester.tap(find.text('Next'));
       await tester.pumpAndSettle();
-      expect(find.text('Confirm the new price'), findsOneWidget);
-      expect(find.text(r'Rice · 5kg: $9.50 → $9.75.'), findsOneWidget);
+      expect(find.text('Confirm the new prices'), findsOneWidget);
+      expect(find.text('Rice · 5kg\nRetail: \$9.50 → \$9.75\nWholesale: \$9.00 → \$8.80'), findsOneWidget);
       await tester.enterText(field('Your PIN'), '1111');
       await tapAndSettle(tester, find.text('Confirm'));
       expect(find.text('Wrong PIN'), findsOneWidget);
       expect(fake.items['v-rice']!['price'], '9.50');
+      expect(fake.wholesale['v-rice'], '9.00');
       await tester.enterText(field('Your PIN'), '4321');
       await tapAndSettle(tester, find.text('Confirm'));
-      expect(fake.items['v-rice']!['price'], '9.75');
+      expect(fake.patched.last, {
+        'price': '9.75',
+        'listPrices': [
+          {'priceListId': 'pl-wholesale', 'price': '8.80'},
+        ],
+      });
       expect(find.text(r'$9.75'), findsOneWidget);
+      expect(find.text(r'$8.80'), findsOneWidget);
+    });
+
+    testWidgets('clears the wholesale price, so the item sells at its retail price', (tester) async {
+      final (_, fake, _) = await openAdmin(tester);
+      await goTo(tester, 'Inventory');
+      await tapAndSettle(tester, find.text('Rice · 5kg'));
+      await tester.tap(find.text('Wholesale price'));
+      await tester.pumpAndSettle();
+      await tester.enterText(field('Wholesale price'), '');
+      await tester.tap(find.text('Next'));
+      await tester.pumpAndSettle();
+      expect(find.text('Confirm the new price'), findsOneWidget);
+      expect(find.text('Rice · 5kg\nWholesale: \$9.00 → same as retail'), findsOneWidget);
+      await tester.enterText(field('Your PIN'), '4321');
+      await tapAndSettle(tester, find.text('Confirm'));
+      expect(fake.patched.last, {
+        'listPrices': [
+          {'priceListId': 'pl-wholesale', 'price': null},
+        ],
+      });
+      expect(find.text('Same as retail'), findsOneWidget);
     });
 
     testWidgets('adjusts stock down with a reason, in the shop', (tester) async {
@@ -98,7 +131,8 @@ void main() {
       await tester.pump();
       expect(find.text('Give it a name'), findsOneWidget);
       await tester.enterText(field('Name'), 'Sugar 2kg');
-      await tester.enterText(field('Selling price'), '3.10');
+      await tester.enterText(field('Retail price'), '3.10');
+      await tester.enterText(field('Wholesale price'), '2.90');
       await tester.enterText(field('Cost (optional)'), '2.40');
       await tester.enterText(field('Barcode (optional)'), '600333');
       await tester.enterText(field('How many'), '12');
@@ -111,7 +145,14 @@ void main() {
       await tapAndSettle(tester, save);
       expect(fake.added.single, containsPair('name', 'Sugar 2kg'));
       expect(fake.added.single['categoryId'], 'c1');
-      expect((fake.added.single['variants'] as List).single, {'price': '3.10', 'costPrice': '2.40', 'barcode': '600333'});
+      expect((fake.added.single['variants'] as List).single, {
+        'price': '3.10',
+        'listPrices': [
+          {'priceListId': 'pl-wholesale', 'price': '2.90'},
+        ],
+        'costPrice': '2.40',
+        'barcode': '600333',
+      });
       final opening = fake.posted.single;
       expect([opening['type'], opening['storeId']], ['opening', 's1']);
       expect((opening['lines'] as List).single, containsPair('quantity', '12.000'));
@@ -132,9 +173,9 @@ void main() {
       await tapAndSettle(tester, find.text('Rice · 5kg'));
       expect(find.text('Adjust stock'), findsNothing);
       expect(find.text('Damaged'), findsNothing);
-      await tester.tap(find.text('Selling price'));
+      await tester.tap(find.text('Retail price'));
       await tester.pumpAndSettle();
-      expect(find.text('New price'), findsNothing);
+      expect(find.text('Prices'), findsNothing);
     });
   });
 

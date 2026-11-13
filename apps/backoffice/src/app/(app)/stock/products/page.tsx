@@ -5,7 +5,7 @@ import { Check, ChevronLeft, ChevronRight, LayoutGrid, List, Plus, Search, X } f
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { Badge, Select, Spinner, Table, Td, Th } from "@/components/ui";
-import { api, Category, Page, Product } from "@/lib/api";
+import { api, Category, Page, PriceList, Product } from "@/lib/api";
 import { money, qty } from "@/lib/format";
 import { MANAGERS, useSession } from "@/lib/session";
 
@@ -54,6 +54,12 @@ export default function ProductsPage() {
   };
 
   const categories = useQuery({ queryKey: ["categories"], queryFn: () => api<Category[]>("/categories") });
+  // Wholesale (and any other list): each item's price there from 1 unit, else it sells at the retail price.
+  const priceLists = useQuery({ queryKey: ["price-lists"], queryFn: () => api<PriceList[]>("/price-lists") });
+  const retailName = priceLists.data?.find((l) => l.isDefault)?.name ?? "Retail";
+  const extraLists = priceLists.data?.filter((l) => l.active && !l.isDefault) ?? [];
+  const listPrice = (v: Product["variants"][number] | undefined, listId: string) =>
+    v?.listPrices?.find((p) => p.priceListId === listId && Number(p.minQuantity) === 1)?.price;
   const products = useQuery({
     queryKey: ["products", "stock", { debounced, categoryId, activeOnly, page }],
     queryFn: () =>
@@ -189,7 +195,12 @@ export default function ProductsPage() {
                 <Th className="hidden md:table-cell">Product code</Th>
                 <Th>Product name</Th>
                 <Th className="hidden md:table-cell">Category</Th>
-                <Th align="right">Sell price</Th>
+                <Th align="right">{extraLists.length ? `${retailName} price` : "Sell price"}</Th>
+                {extraLists.map((l) => (
+                  <Th key={l.id} align="right">
+                    {l.name} price
+                  </Th>
+                ))}
                 <Th className="hidden text-center xl:table-cell">By weight</Th>
                 <Th className="hidden text-center xl:table-cell">Track stock</Th>
                 <Th align="right">Qty</Th>
@@ -219,6 +230,20 @@ export default function ProductsPage() {
                     <Td align="right" className="font-medium whitespace-nowrap tabular-nums">
                       {money(main?.price, cur)}
                     </Td>
+                    {extraLists.map((l) => {
+                      const price = listPrice(main, l.id);
+                      return (
+                        <Td key={l.id} align="right" className="whitespace-nowrap tabular-nums">
+                          {price ? (
+                            <span className="font-medium">{money(price, cur)}</span>
+                          ) : (
+                            <span className="text-ink-faint" title={`Sold at the ${retailName.toLowerCase()} price`}>
+                              —
+                            </span>
+                          )}
+                        </Td>
+                      );
+                    })}
                     <Td className="hidden text-center xl:table-cell">
                       <Tick on={p.soldByWeight} label="Sold by weight" />
                     </Td>
@@ -264,7 +289,17 @@ export default function ProductsPage() {
                 <span className="mt-3 line-clamp-2 text-sm font-medium group-hover:text-ledger-700">{p.name}</span>
                 <span className="text-xs text-ink-faint">{catName(p.categoryId) ?? "No category"}</span>
                 <span className="mt-auto flex items-end justify-between pt-3">
-                  <span className="font-semibold tabular-nums">{money(main?.price)}</span>
+                  <span className="flex flex-col">
+                    <span className="font-semibold tabular-nums">{money(main?.price)}</span>
+                    {extraLists.map((l) => {
+                      const price = listPrice(main, l.id);
+                      return price ? (
+                        <span key={l.id} className="text-xs text-ink-soft tabular-nums">
+                          {l.name} {money(price)}
+                        </span>
+                      ) : null;
+                    })}
+                  </span>
                   {p.trackStock && (
                     <span className={`text-xs font-medium ${onHand <= 0 ? "text-danger" : "text-ink-soft"}`}>{qty(p.onHand)} in stock</span>
                   )}
